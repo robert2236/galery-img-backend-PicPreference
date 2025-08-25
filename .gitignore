@@ -1,0 +1,21 @@
+# Archivos y carpetas generados por Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos y carpetas generados por el entorno de desarrollo
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/
+*.egg
+*.log
+venv/
+
+
+# Archivos y carpetas generados por el sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos y carpetas específicos de FastAPI
