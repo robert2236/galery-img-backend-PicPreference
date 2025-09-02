@@ -16,8 +16,8 @@ class PyObjectId(ObjectId):
 class User(BaseModel):
     username: str
     email: str
-    name: str
-    surname: str
+    name: Optional[str] = None
+    surname: Optional[str] = None
     info: Optional[str] = None
     web: Optional[str] = None
     password: Optional[str] = None

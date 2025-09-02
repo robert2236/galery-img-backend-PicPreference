@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Optional,Union
 from pydantic import BaseModel, Field, validator
 from bson import ObjectId
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import re
 
 
@@ -24,6 +24,8 @@ class ImageResponse(BaseModel):
     image_url: str
     category: str
     username: Optional[str] = None
+    liked_by: List[str] = Field(default_factory=list) 
+    comments: List[Dict[str, Any]] = Field(default_factory=list)
 
        
 class Image(BaseModel):
@@ -43,21 +45,11 @@ class Image(BaseModel):
             "last_interaction": None
         }
     )
-    liked_by: List[str] = Field(default_factory=list) 
+    liked_by: List[Union[str, int]] = Field(default_factory=list)
+    comments: List[Dict[str, Any]] = []
 
 
 
-
-    
-    @validator('image_url')
-    def validate_image_data(cls, v):
-        # Opcional: agregar validación para distinguir entre URL y Base64
-        if not (v.startswith('http') or v.startswith('data:image')):
-            # Aquí podrías agregar validación más estricta del Base64
-            if len(v) > 10_000_000:  # Ejemplo: límite de ~10MB
-                raise ValueError("Image data too large")
-        return v
-    
 
 class UpdateImage(BaseModel):
     id: Optional[PyObjectId] = Field(alias='_id', default=None)
@@ -66,6 +58,10 @@ class UpdateImage(BaseModel):
 class InteractionUpdate(BaseModel):
     action: str  # "likes", "downloads", "views"
     increment: int = 1  # Valor a incrementar (por defecto 1)
+    
+class CommentCreate(BaseModel):
+    comment: str = Field(..., min_length=1, max_length=500, description="Comentario de la imagen")
+    parent_comment_id: Optional[int] = Field(None, description="ID del comentario padre si es una respuesta")
     
 
 class Config:

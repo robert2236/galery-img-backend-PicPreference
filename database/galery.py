@@ -4,10 +4,17 @@ from bson import ObjectId
 import datetime
 
 async def get_all_images():
+    """Obtiene todas las imágenes y convierte liked_by a strings"""
+    cursor = coleccion.find()
     img_list = []
-    cursor = coleccion.find({}, {"features": 0})
+    
     async for document in cursor:
+        # Convertir todos los liked_by a strings
+        if "liked_by" in document and document["liked_by"]:
+            document["liked_by"] = [str(user_id) for user_id in document["liked_by"]]
+        
         img_list.append(ImageResponse(**document))
+    
     return img_list
 
 async def get_one_image(find):

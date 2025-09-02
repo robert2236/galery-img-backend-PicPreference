@@ -1,28 +1,63 @@
 from fastapi import APIRouter, HTTPException, Depends,status
 from database.galery import (get_all_images,create_image, get_one_image,delete_image)
-from models.galery import Image,UpdateImage,ImageResponse,InteractionUpdate
+from models.galery import Image,UpdateImage,ImageResponse,InteractionUpdate, CommentCreate
 from models.users import User
 from database.databases import user,coleccion
 from utils.auth.oauth import get_current_user
 import base64
 from datetime import datetime
 import random
-from datetime import datetime
-from fastapi import HTTPException
+from datetime import datetime, timedelta
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 from utils.feature_extractor import FeatureExtractor  # Asegúrate de importar tu extractor
 import numpy as np
 from utils.auth.oauth import extract_user_id
+import asyncio
 
 
 feature_extractor = FeatureExtractor()
 
 galery= APIRouter()
 
+image_cache = None
+cache_timestamp = None
+CACHE_DURATION = 10  # 5 minutos en segundos
+
 @galery.get('/api/images')
 async def get_images():
-    response = await get_all_images()
-    return response
-
+    global image_cache, cache_timestamp
+    
+    # Verificar cache
+    if (image_cache is not None and 
+        cache_timestamp is not None and 
+        (datetime.now() - cache_timestamp).total_seconds() < CACHE_DURATION):
+        
+        print("✅ Sirviendo desde cache")
+        return JSONResponse(content=image_cache)
+    
+    # Obtener datos frescos
+    print("🔄 Obteniendo datos frescos")
+    images = await get_all_images()
+    
+    # Convertir a formato serializable manualmente
+    serializable_response = []
+    for image in images:
+        image_dict = image.dict()
+        
+        # Convertir datetime en comentarios
+        if 'comments' in image_dict and image_dict['comments']:
+            for comment in image_dict['comments']:
+                if 'created_at' in comment and isinstance(comment['created_at'], datetime):
+                    comment['created_at'] = comment['created_at'].isoformat()
+        
+        serializable_response.append(image_dict)
+    
+    # Actualizar cache
+    image_cache = serializable_response
+    cache_timestamp = datetime.now()
+    
+    return JSONResponse(content=serializable_response)
 
 
 @galery.post('/api/create_image', response_model=Image)
@@ -139,11 +174,11 @@ async def update_interactions(
     
     # 4. Si es like, agregar al array liked_by
     if interaction.action == "likes":
-        if "liked_by" in image and user_id in image["liked_by"]:
+        """ if "liked_by" in image and user_id in image["liked_by"]:
             raise HTTPException(
                 status_code=400,
                 detail="Ya has dado like a esta imagen"
-            )
+            ) """
         update_operation["$addToSet"] = {"liked_by": user_id}
 
     # 5. Actualizar la imagen
@@ -178,3 +213,134 @@ async def update_interactions(
     # 7. Devolver la imagen actualizada
     updated_image = await coleccion.find_one({"image_id": image_id})
     return Image(**updated_image)
+
+
+@galery.put("/api/images/{image_id}/comments", response_model=Image)
+async def add_comment(
+    image_id: int,
+    comment_data: CommentCreate,
+    user_data: dict = Depends(extract_user_id)
+):
+    user_id = user_data["user_id"]
+    
+    # Verificar que el usuario existe
+    usuario = await user.find_one({"username": user_id})
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    
+    # Verificar que la imagen existe
+    image = await coleccion.find_one({"image_id": image_id})
+    if not image:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    
+    # Generar ID único para el comentario
+    comment_id = datetime.utcnow().timestamp()
+    
+    # Estructura del comentario
+    new_comment = {
+        "comment_id": int(comment_id),
+        "user_id": user_id,
+        "comment": comment_data.comment,
+        "created_at": datetime.utcnow(),
+        "parent_comment_id": comment_data.parent_comment_id,
+        "likes": 0,
+        "replies": []
+    }
+    
+    # Si es un comentario padre, agregarlo al array principal
+    if comment_data.parent_comment_id is None:
+        update_operation = {
+            "$push": {"comments": new_comment},
+            "$inc": {"interactions.comments": 1},
+            "$set": {"interactions.last_interaction": datetime.utcnow()}
+        }
+    else:
+        # Si es una respuesta, agregarlo al comentario padre
+        update_operation = {
+            "$push": {"comments.$[comment].replies": new_comment},
+            "$inc": {"interactions.comments": 1},
+            "$set": {"interactions.last_interaction": datetime.utcnow()}
+        }
+    
+    # Actualizar la imagen
+    if comment_data.parent_comment_id is None:
+        update_result = await coleccion.update_one(
+            {"image_id": image_id},
+            update_operation
+        )
+    else:
+        update_result = await coleccion.update_one(
+            {"image_id": image_id, "comments.comment_id": comment_data.parent_comment_id},
+            update_operation,
+            array_filters=[{"comment.comment_id": comment_data.parent_comment_id}]
+        )
+    
+    if update_result.modified_count == 0:
+        if comment_data.parent_comment_id:
+            raise HTTPException(
+                status_code=404, 
+                detail="Comentario padre no encontrado"
+            )
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    
+    # Actualizar el usuario
+    await user.update_one(
+        {"username": user_id},
+        {
+            "$addToSet": {"commented_images": image_id},
+            "$set": {"last_updated": datetime.utcnow()}
+        }
+    )
+    
+    # Devolver la imagen actualizada
+    updated_image = await coleccion.find_one({"image_id": image_id})
+    return updated_image
+
+@galery.delete("/api/images/{image_id}/likes", response_model=Image)
+async def remove_like(
+    image_id: int,
+    user_data: dict = Depends(extract_user_id)
+):
+    user_id = user_data["user_id"]
+    
+    # Verificar si el usuario existe
+    usuario = await user.find_one({"username": user_id})
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    
+    # Verificar si la imagen existe
+    image = await coleccion.find_one({"image_id": image_id})
+    if not image:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    
+    # Verificar si el usuario tiene like en esta imagen
+    liked_by = image.get("liked_by", [])
+    if user_id not in liked_by:
+        raise HTTPException(
+            status_code=400,
+            detail="No tienes like en esta imagen"
+        )
+    
+    # Remover el like
+    update_operation = {
+        "$pull": {"liked_by": user_id},
+        "$inc": {"interactions.likes": -1},
+        "$set": {"interactions.last_interaction": datetime.utcnow()}
+    }
+    
+    # Actualizar la imagen
+    update_result = await coleccion.update_one(
+        {"image_id": image_id},
+        update_operation
+    )
+    
+    if update_result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    
+    
+    # Devolver la imagen actualizada
+    updated_image = await coleccion.find_one({"image_id": image_id})
+    return Image(**updated_image)
+
+
+
