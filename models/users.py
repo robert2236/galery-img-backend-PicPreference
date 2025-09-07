@@ -23,6 +23,7 @@ class User(BaseModel):
     password: Optional[str] = None
     image: Optional[str] = None
     admin: bool = False
+    theme: bool = False
     images: List[int] = []
     user_id: Optional[int] = None
     
@@ -47,6 +48,7 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     info: Optional[str] = None
     web: Optional[str] = None
+    theme: bool = False
 
         
 class Login(BaseModel):

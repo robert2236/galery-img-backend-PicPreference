@@ -7,6 +7,7 @@ from database.databases import coleccion, user
 from bson import ObjectId
 from typing import Optional
 import asyncio
+from models.Pagination import PaginationParams
 
 router = APIRouter(prefix="/recommend", tags=["Recommendations"])
 visual_recommender = VisualRecommender()
@@ -46,48 +47,113 @@ async def get_similar_images(image_id: str, limit: int = 5):
     except Exception as e:
         raise HTTPException(500, f"Error: {str(e)}")
 
+from fastapi import HTTPException, Depends, Query
+from typing import Optional
+
+
 @router.get("/user/{user_id}")
-async def get_user_recommendations(user_id: int, limit: int = 20):
-    """Recomendaciones para un usuario específico"""
+async def get_user_recommendations(
+    user_id: int, 
+    pagination: PaginationParams = Depends()
+):
+    """Recomendaciones para un usuario específico con paginación"""
     try:
-        print(f"🔍 Buscando usuario: {user_id}")
+        user_id_str = str(user_id)
+        print(f"🔍 Buscando usuario: {user_id} (como string: {user_id_str})")
         
         # Verificar que el usuario existe
         user_exists = await user.find_one({"user_id": user_id})
         if not user_exists:
-            print(f"❌ Usuario {user_id} no encontrado")
+            print(f"❌ Usuario {user_id} no encontrado en la base de datos")
             raise HTTPException(404, f"Usuario {user_id} no encontrado")
         
-        print(f"✅ Usuario {user_id} encontrado, generando recomendaciones...")
+        # Obtener TODAS las recomendaciones del grafo (sin límite para paginar después)
+        graph_recs = await graph_recommender.recommend_for_user(user_id_str, k=1000)  # Número alto para obtener todas
         
-        # Obtener recomendaciones del grafo de interacciones
-        graph_recs = graph_recommender.recommend_for_user(user_id, k=limit)
-        print(f"📊 Recomendaciones del grafo: {len(graph_recs)}")
+        # Si no hay recomendaciones, usar fallback (sin llamar al método de la clase)
+        if not graph_recs:
+            print("⚠️ No hay recomendaciones del grafo, usando fallback...")
+            # Lógica de fallback - obtener todas las populares
+            popular_images = await coleccion.find(
+                {"interactions.views": {"$gt": 0}}
+            ).sort("interactions.likes", -1).to_list(None)
+            
+            graph_recs = []
+            for image in popular_images:
+                image_id = image.get("image_id")
+                if image_id:
+                    graph_recs.append((str(image_id), 1.0))
         
-        # Obtener información de las imágenes recomendadas
-        recommendations = []
+        # Procesar TODAS las recomendaciones primero
+        all_recommendations = []
         for img_id, score in graph_recs:
-            image = await coleccion.find_one({"image_id": img_id})
+            print(f"🔍 Buscando imagen con ID: {img_id} (tipo: {type(img_id)})")
+            
+            # Buscar la imagen - intentar múltiples formatos
+            image = None
+            
+            # Intentar como número (si es posible)
+            try:
+                numeric_id = int(img_id)
+                image = await coleccion.find_one({"image_id": numeric_id})
+                if image:
+                    print(f"   ✅ Encontrada con ID numérico: {numeric_id}")
+            except (ValueError, TypeError):
+                pass
+            
+            # Si no se encontró, intentar como string
+            if not image:
+                image = await coleccion.find_one({"image_id": str(img_id)})
+                if image:
+                    print(f"   ✅ Encontrada con ID string: {img_id}")
+            
             if image:
-                recommendations.append({
-                    "id": str(image["image_id"]),
+                all_recommendations.append({
+                    "image_id": image.get("image_id"),
                     "title": image.get("title", "Sin título"),
                     "url": image.get("image_url", ""),
                     "score": float(score),
-                    "type": "behavioral"
+                    "type": "behavioral" if score > 1.0 else "fallback"
                 })
+            else:
+                print(f"   ❌ Imagen no encontrada en BD para ID: {img_id}")
         
-        print(f"🎯 Recomendaciones finales: {len(recommendations)}")
+        # Aplicar paginación
+        total_count = len(all_recommendations)
+        total_pages = (total_count + pagination.limit - 1) // pagination.limit if pagination.limit > 0 else 1
+        has_next = (pagination.skip + pagination.limit) < total_count
+        has_prev = pagination.skip > 0
+        
+        # Obtener solo la página solicitada
+        paginated_recommendations = all_recommendations[
+            pagination.skip:pagination.skip + pagination.limit
+        ]
+        
+        print(f"🎯 {len(paginated_recommendations)} recomendaciones finales para usuario {user_id} (página {pagination.page})")
         
         return {
             "user_id": user_id,
-            "recommendations": recommendations[:limit],
-            "total_recommendations": len(recommendations[:limit])
+            "recommendations": paginated_recommendations,
+            "pagination": {
+                "total": total_count,
+                "page": pagination.page,
+                "limit": pagination.limit,
+                "skip": pagination.skip,
+                "total_pages": total_pages,
+                "has_next": has_next,
+                "has_prev": has_prev,
+                "next_page": pagination.page + 1 if has_next else None,
+                "prev_page": pagination.page - 1 if has_prev else None
+            },
+            "total_recommendations": total_count
         }
+        
     except Exception as e:
         print(f"💥 Error en recomendaciones para usuario {user_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Error: {str(e)}")
-
+    
 @router.get("/optimize-weights")
 async def get_optimized_weights():
     """Optimiza y devuelve los pesos para el sistema de recomendación"""
@@ -146,3 +212,60 @@ async def get_popular_recommendations(limit: int = 10):
         }
     except Exception as e:
         raise HTTPException(500, f"Error: {str(e)}")
+    
+# En tu archivo de rutas de recomendaciones
+@router.get("/debug/graph")
+async def debug_database():
+    """Verifica los datos en la base de datos"""
+    try:
+        # Verificar imágenes con likes
+        images_with_likes = await coleccion.find({
+            "liked_by": {"$exists": True, "$ne": []}
+        }).to_list(length=None)
+        
+        # Verificar todas las imágenes
+        all_images = await coleccion.find().to_list(length=5)
+        
+        # Verificar estructura de algunas imágenes
+        sample_images = []
+        for img in all_images[:3]:
+            sample_images.append({
+                "image_id": img.get("image_id"),
+                "title": img.get("title"),
+                "has_liked_by": "liked_by" in img,
+                "liked_by_count": len(img.get("liked_by", [])),
+                "liked_by_sample": img.get("liked_by", [])[:3] if "liked_by" in img else []
+            })
+        
+        return {
+            "total_images": await coleccion.count_documents({}),
+            "images_with_likes": len(images_with_likes),
+            "sample_images": sample_images,
+            "images_with_likes_sample": [
+                {
+                    "image_id": img.get("image_id"),
+                    "liked_by": img.get("liked_by", [])[:3],
+                    "liked_by_count": len(img.get("liked_by", []))
+                } for img in images_with_likes[:3]
+            ] if images_with_likes else []
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
+    
+#Reconstruir grafo
+
+@router.post("/rebuild-graph")
+async def rebuild_graph():
+    """Forzar reconstrucción del grafo"""
+    try:
+        await graph_recommender.build_from_db()
+        return {
+            "message": "Grafo reconstruido exitosamente", 
+            "nodes": graph_recommender.graph.number_of_nodes(),
+            "edges": graph_recommender.graph.number_of_edges(),
+            "user_nodes": len([n for n in graph_recommender.graph.nodes() if n.startswith('user_')]),
+            "image_nodes": len([n for n in graph_recommender.graph.nodes() if n.startswith('image_')])
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error reconstruyendo grafo: {str(e)}")

@@ -73,7 +73,7 @@ def test_recommendations():
         print("\n2. 👤 Obteniendo información del usuario de prueba...")
         # Primero obtener el token para luego obtener información del usuario
         user_id = None
-        user_info_response = requests.get(f"{BASE_URL}/users/me", headers=auth_headers)
+        user_info_response = requests.get(f"{BASE_URL}/api/profile", headers=auth_headers)
         if user_info_response.status_code == 200:
             user_info = user_info_response.json()
             user_id = user_info.get('user_id')
@@ -164,39 +164,9 @@ def test_recommendations():
             print(f"   ❌ Error optimizando pesos: {response.status_code}")
             print(f"   Response: {response.text}")
 
-        # 7. Simular algunas interacciones
-        print("\n7. 🖱️ Simulando interacciones...")
-        
-        for i, image in enumerate(images[:3]):
-            # Obtener el ID correcto (image_id o _id)
-            image_id = image.get('image_id', image.get('_id', ''))
-            action = "likes" if i % 2 == 0 else "views"
-            
-            if not image_id:
-                print(f"   ⚠️ Saltando - ID de imagen no disponible")
-                continue
-                
-            # Usar el endpoint CORRECTO de interacciones
-            interaction_data = {
-                "action": action,
-                "increment": 1
-            }
-            
-            response = requests.put(
-                f"{BASE_URL}/api/images/{image_id}/interactions",
-                json=interaction_data,
-                headers=auth_headers
-            )
-            
-            if response.status_code == 200:
-                print(f"   ✅ Interacción {action} registrada para imagen {image_id}")
-            elif response.status_code == 400 and "Ya has dado like" in response.text:
-                print(f"   ⚠️ Like ya registrado para imagen {image_id}")
-            else:
-                print(f"   ❌ Error en interacción {action}: {response.status_code}")
-                print(f"   Response: {response.text}")
+  
 
-        # 8. Probar recomendaciones para usuario (user_id dinámico)
+        # 7. Probar recomendaciones para usuario (user_id dinámico)
         print(f"\n8. 👤 Probando recomendaciones para usuario (ID: {user_id})...")
         response = requests.get(f"{BASE_URL}/recommend/user/{user_id}?limit=3", headers=auth_headers)
         if response.status_code == 200:

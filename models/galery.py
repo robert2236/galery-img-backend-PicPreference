@@ -21,6 +21,7 @@ class PyObjectId(ObjectId):
 
 class ImageResponse(BaseModel):
     image_id: Optional[int] = None
+    title: Optional[str] = None
     image_url: str
     category: str
     username: Optional[str] = None

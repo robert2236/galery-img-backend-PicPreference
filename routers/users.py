@@ -75,7 +75,8 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         "name": current_user["name"],
         "surname": current_user["surname"],
         "info": current_user["info"],
-        "web": current_user["web"]
+        "web": current_user["web"],
+        "theme": current_user["theme"]
     }
 
 def get_image_base64(image_path: str) -> str:
@@ -166,11 +167,36 @@ async def reset_password(request: ResetPasswordRequest):
 
     return {"res": "Password updated successfully."}
 
+@users.put("/api/change-theme")
+async def change_theme(
+    user_update: UserUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    update_data = {}
+    if user_update.theme is not None:
+        update_data["theme"] = user_update.theme
+        
+    if update_data:
+        await user.update_one({"username": current_user["username"]}, {"$set": update_data})
+
+    new_access_token = create_access_token(data={"sub": current_user["username"]})
+    
+    return {
+        "res": "Tema cambiado",
+        "new_access_token": new_access_token
+    }
+
 @users.put("/api/profile")
 async def update_user_data(
     user_update: UserUpdate,
     current_user: dict = Depends(get_current_user)
 ):
+    if update_data:
+        await user.update_one({"username": current_user["username"]}, {"$set": update_data})
+
+    new_access_token = create_access_token(data={"sub": current_user["username"]})
+    
+    
     
     # Crear un diccionario para los cambios
     update_data = {}

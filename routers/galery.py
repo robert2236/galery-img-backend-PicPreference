@@ -14,6 +14,8 @@ from utils.feature_extractor import FeatureExtractor  # Asegúrate de importar t
 import numpy as np
 from utils.auth.oauth import extract_user_id
 import asyncio
+from typing import Optional, List
+from models.Pagination import PaginationParams
 
 
 feature_extractor = FeatureExtractor()
@@ -23,6 +25,8 @@ galery= APIRouter()
 image_cache = None
 cache_timestamp = None
 CACHE_DURATION = 10  # 5 minutos en segundos
+
+
 
 @galery.get('/api/images')
 async def get_images():
@@ -59,7 +63,154 @@ async def get_images():
     
     return JSONResponse(content=serializable_response)
 
+@galery.get('/test')
+async def test():
+    return {"message": "✅ Funciona"}
 
+from fastapi import HTTPException, Depends, Query
+from typing import Optional
+from datetime import datetime
+
+# Clase para manejar los parámetros de paginación
+class PaginationParams:
+    def __init__(
+        self,
+        skip: int = Query(0, ge=0, description="Número de elementos a saltar"),
+        limit: int = Query(20, ge=1, le=100, description="Límite de resultados por página"),
+        page: int = Query(1, ge=1, description="Número de página (alternativo a skip)")
+    ):
+        self.limit = limit
+        # Si se proporciona page, calcular skip automáticamente
+        if page > 1:
+            self.skip = (page - 1) * limit
+        else:
+            self.skip = skip
+        self.page = page if page > 1 else (skip // limit) + 1
+
+@galery.get('/api/images/search')
+async def search_images(
+    q: Optional[str] = None,
+    tags: Optional[str] = None,
+    min_likes: Optional[int] = None,
+    min_views: Optional[int] = None,
+    pagination: PaginationParams = Depends()
+):
+    try:
+        # Obtener todas las imágenes usando la función existente
+        all_images = await get_all_images()
+        
+        # Convertir a lista de diccionarios
+        images_dicts = []
+        for image in all_images:
+            # Convertir el modelo Pydantic a diccionario
+            image_dict = image.dict()
+            
+            # Asegurar que los campos existan y no sean None
+            image_dict.setdefault('interactions', {})
+            image_dict['interactions'].setdefault('likes', 0)
+            image_dict['interactions'].setdefault('views', 0)
+            image_dict.setdefault('tags', [])
+            image_dict.setdefault('title', '')  # Asegurar que title no sea None
+            image_dict.setdefault('category', '')
+            image_dict.setdefault('username', '')
+            
+            # Convertir valores None a string vacío
+            if image_dict['title'] is None:
+                image_dict['title'] = ''
+            if image_dict['username'] is None:
+                image_dict['username'] = ''
+            
+            # Convertir datetime en comentarios
+            if 'comments' in image_dict and image_dict['comments']:
+                for comment in image_dict['comments']:
+                    if 'created_at' in comment and isinstance(comment['created_at'], datetime):
+                        comment['created_at'] = comment['created_at'].isoformat()
+            
+            images_dicts.append(image_dict)
+        
+        # Aplicar filtros paso a paso
+        filtered_images = images_dicts
+        
+        # 1. Filtrar por texto de búsqueda (q)
+        if q:
+            q_lower = q.lower().strip()
+            temp_filtered = []
+            
+            for img in filtered_images:
+                # Asegurar que los campos no sean None antes de usar .lower()
+                title = (img.get('title') or '').lower()
+                category = (img.get('category') or '').lower()
+                username = (img.get('username') or '').lower()
+                image_tags = [tag.lower() for tag in (img.get('tags') or []) if tag is not None]
+                
+                # Buscar coincidencias
+                title_match = q_lower in title
+                category_match = q_lower in category
+                username_match = q_lower in username
+                tags_match = any(q_lower in tag for tag in image_tags)
+                
+                if title_match or category_match or username_match or tags_match:
+                    temp_filtered.append(img)
+            
+            filtered_images = temp_filtered
+        
+        # 2. Filtrar por tags específicos
+        if tags:
+            tag_list = [tag.strip().lower() for tag in tags.split(',') if tag.strip()]
+            temp_filtered = []
+            for img in filtered_images:
+                image_tags = [tag.lower() for tag in (img.get('tags') or []) if tag is not None]
+                if any(tag in image_tags for tag in tag_list):
+                    temp_filtered.append(img)
+            filtered_images = temp_filtered
+        
+        # 3. Filtrar por mínimo de likes
+        if min_likes is not None:
+            filtered_images = [
+                img for img in filtered_images 
+                if img['interactions'].get('likes', 0) >= min_likes
+            ]
+        
+        # 4. Filtrar por mínimo de views
+        if min_views is not None:
+            filtered_images = [
+                img for img in filtered_images 
+                if img['interactions'].get('views', 0) >= min_views
+            ]
+        
+        # Aplicar paginación
+        total_count = len(filtered_images)
+        
+        # Calcular información de paginación
+        total_pages = (total_count + pagination.limit - 1) // pagination.limit if pagination.limit > 0 else 1
+        has_next = (pagination.skip + pagination.limit) < total_count
+        has_prev = pagination.skip > 0
+        
+        paginated_images = filtered_images[pagination.skip:pagination.skip + pagination.limit]
+        
+        return {
+            "results": paginated_images,
+            "total": total_count,
+            "limit": pagination.limit,
+            "skip": pagination.skip,
+            "page": pagination.page,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_prev": has_prev,
+            "next_page": pagination.page + 1 if has_next else None,
+            "prev_page": pagination.page - 1 if has_prev else None,
+            "search_query": q,
+            "filters_applied": {
+                "text_search": q is not None,
+                "tags_filter": tags is not None,
+                "min_likes": min_likes,
+                "min_views": min_views
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en búsqueda: {str(e)}")
+    
 @galery.post('/api/create_image', response_model=Image)
 async def save_image(img: Image):
     # 1. Verificar si el usuario existe

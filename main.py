@@ -34,7 +34,6 @@ recommender = VisualRecommender()
 
 async def rebuild_graph_periodically():
     """Reconstruye el grafo periódicamente (ejecutar en background)"""
-
     while True:
         try:
             print("🔄 Reconstruyendo grafo de interacciones (tarea programada)...")
@@ -45,6 +44,33 @@ async def rebuild_graph_periodically():
                 "liked_by": {"$exists": True, "$ne": []}
             }).to_list(None)
             
+            print(f"📊 Procesando {len(images_with_likes)} imágenes con likes...")
+            
+            # PRIMERO: Añadir todos los nodos de usuario e imagen
+            all_user_ids = set()
+            all_image_ids = set()
+            
+            for img in images_with_likes:
+                image_id = img.get("image_id")
+                liked_by = img.get("liked_by", [])
+                
+                if image_id is not None:
+                    all_image_ids.add(image_id)
+                    all_user_ids.update(liked_by)
+            
+            # Añadir nodos de usuario
+            for user_id in all_user_ids:
+                user_node = f"user_{user_id}"
+                graph_recommender.graph.add_node(user_node, type="user")
+            
+            # Añadir nodos de imagen
+            for image_id in all_image_ids:
+                image_node = f"image_{image_id}"
+                graph_recommender.graph.add_node(image_node, type="image")
+            
+            print(f"✅ Añadidos {len(all_user_ids)} usuarios y {len(all_image_ids)} imágenes como nodos")
+            
+            # SEGUNDO: Añadir aristas (conexiones)
             for img in images_with_likes:
                 image_id = img.get("image_id")
                 liked_by = img.get("liked_by", [])
@@ -58,8 +84,17 @@ async def rebuild_graph_periodically():
             
             print(f"✅ Grafo reconstruido: {graph_recommender.graph.number_of_nodes()} nodos, {graph_recommender.graph.number_of_edges()} aristas")
             
+            # Debug: mostrar algunos nodos
+            user_nodes = [n for n in graph_recommender.graph.nodes() if isinstance(n, str) and n.startswith('user_')]
+            image_nodes = [n for n in graph_recommender.graph.nodes() if isinstance(n, str) and n.startswith('image_')]
+            
+            print(f"   👥 User nodes: {user_nodes[:5]}...")
+            print(f"   📷 Image nodes: {image_nodes[:5]}...")
+            
         except Exception as e:
             print(f"❌ Error en reconstrucción periódica: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Esperar 1 hora antes de la próxima reconstrucción
         await asyncio.sleep(3600)
