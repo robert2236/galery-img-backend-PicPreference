@@ -26,11 +26,22 @@ from services.auxiliary import (
     get_popular_recommendations,
     remove_duplicates
 )
+from services.recommendation_engine import RecommendationEngine
+from services.recommender_evaluator import RecommenderEvaluator
+from services.graph_recommender import graph_recommender
+from services.simple_evaluator import SimpleEvaluator
+
+
+simple_evaluator = SimpleEvaluator(k=5)
+recommendation_engine = RecommendationEngine()
+graph_recommender = InteractionGraph()
 
 # Instancias globales
 graph_recommender = InteractionGraph()
 visual_recommender = VisualRecommender()
 recommender = VisualRecommender()
+
+
 
 async def rebuild_graph_periodically():
     """Reconstruye el grafo periódicamente (ejecutar en background)"""
@@ -144,6 +155,7 @@ origins = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://localhost:8000",
+    "http://192.168.1.103:5173"
 ]
 
 app.add_middleware(
@@ -161,20 +173,15 @@ app.include_router(galery)
 app.include_router(category)
 app.include_router(recommendations_router)
 
-@app.get("/")
-async def root():
-    """Endpoint raíz con información del sistema"""
-    return {
-        "message": "Sistema de Recomendación de Galería",
-        "version": "1.0.0",
-        "endpoints": {
-            "documentación": "/docs",
-            "recomendaciones": "/recommend",
-            "galería": "/galery",
-            "usuarios": "/users",
-            "categorías": "/category"
-        }
-    }
+@app.on_event("startup")
+async def startup_event():
+    """Inicializar el sistema al arrancar"""
+    try:
+        print("🚀 Inicializando sistema de recomendación...")
+        await recommendation_engine.initialize()
+        print("✅ Sistema de recomendación listo")
+    except Exception as e:
+        print(f"❌ Error inicializando sistema: {e}")
 
 @app.get("/health")
 async def health_check():
@@ -412,6 +419,170 @@ async def get_cold_start_recommendations(user_id: int):
         "total_recommendations": len(popular_images[:15]),
         "recommendations": popular_images[:15]
     }
+    
+@app.get("/api/recommend/{user_id}")
+async def get_recommendations(user_id: int, page: int = 1, limit: int = 10):
+    """Endpoint principal de recomendaciones con paginación"""
+    try:
+        # Obtener todas las recomendaciones
+        all_recommendations = await recommendation_engine.get_recommendations(user_id)
+        
+        if not all_recommendations:
+            fallback = await get_popular_images(10)
+            # Paginar las recomendaciones de fallback
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            paginated_fallback = fallback[start_idx:end_idx]
+            
+            return {
+                "status": "warning",
+                "message": "No se pudieron generar recomendaciones personalizadas",
+                "fallback_recommendations": paginated_fallback,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": len(fallback),
+                    "pages": (len(fallback) + limit - 1) // limit
+                }
+            }
+        
+        # Paginar las recomendaciones
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_recommendations = all_recommendations[start_idx:end_idx]
+        
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "recommendations": paginated_recommendations,
+            "count": len(paginated_recommendations),
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": len(all_recommendations),
+                "pages": (len(all_recommendations) + limit - 1) // limit
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Error en endpoint de recomendaciones: {e}")
+        fallback = await get_popular_images(5)
+        # Paginar las recomendaciones de error
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_fallback = fallback[start_idx:end_idx]
+        
+        return {
+            "status": "error",
+            "message": "Error interno del sistema",
+            "fallback_recommendations": paginated_fallback,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": len(fallback),
+                "pages": (len(fallback) + limit - 1) // limit
+            }
+        }
+        
+@app.get("/graph-stats")
+async def get_graph_stats():
+    """Estadísticas del grafo"""
+    return {
+        "nodes": graph_recommender.graph.number_of_nodes(),
+        "edges": graph_recommender.graph.number_of_edges(),
+        "user_nodes": len([n for n in graph_recommender.graph.nodes if graph_recommender.graph.nodes[n].get('type') == 'user']),
+        "image_nodes": len([n for n in graph_recommender.graph.nodes if graph_recommender.graph.nodes[n].get('type') == 'image'])
+    }        
+        
+@app.get("/evaluate/{user_id}")
+async def evaluate_user(user_id: int):
+    evaluator = RecommenderEvaluator(k=5)
+    result = await evaluator.evaluate_single_user(user_id, graph_recommender)
+    
+    if result:
+        return result
+    else:
+        return {
+            "error": "No se pudo evaluar el usuario",
+            "user_id": user_id,
+            "message": "El usuario no tiene suficientes datos o hubo un error"
+        }
+
+@app.get("/debug-user/{user_id}")
+async def debug_user(user_id: int):
+    """Endpoint para debuggear datos del usuario"""
+    try:
+        # 1. Verificar si el usuario existe
+        user_data = await user.find_one({"user_id": user_id})
+        
+        # 2. Buscar imágenes que el usuario ha likeado
+        liked_images = await simple_evaluator.get_user_likes(user_id)
+        
+        # 3. Verificar algunas imágenes específicas para ver su estructura
+        sample_image = await coleccion.find_one({"liked_by": user_id})
+        
+        # 4. Contar total de imágenes likeadas
+        total_liked = await coleccion.count_documents({"liked_by": user_id})
+        
+        # 5. Ver estructura de campos de una imagen
+        image_fields = []
+        if sample_image:
+            image_fields = list(sample_image.keys())
+        
+        return {
+            "user_id": user_id,
+            "user_exists": user_data is not None,
+            "total_liked_images": total_liked,
+            "liked_images_sample": liked_images[:5],
+            "image_fields": image_fields,
+            "sample_image_structure": {
+                "has_liked_by": "liked_by" in sample_image if sample_image else False,
+                "liked_by_sample": sample_image.get("liked_by", [])[:3] if sample_image else [],
+                "has_image_id": "image_id" in sample_image if sample_image else False
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/evaluate-all")
+async def evaluate_all():
+    evaluator = RecommenderEvaluator(k=10)
+    results = await evaluator.evaluate_all_users(graph_recommender)
+    metrics = await evaluator.calculate_metrics(results)
+    
+    return {
+        "metrics": metrics,
+        "detailed_results": results[:10]  # Mostrar solo primeros 10 para no saturar
+    }
+    
+@app.get("/debug/recommendations/{user_id}")
+async def debug_recommendations(user_id: int):
+    """Endpoint para diagnóstico del sistema de recomendación"""
+    viewed_images = await get_user_viewed_images(user_id)
+    popular_images = await get_popular_images(5)
+    
+    return {
+        "user_id": user_id,
+        "viewed_images_count": len(viewed_images),
+        "viewed_images_sample": viewed_images[:5],
+        "popular_images_available": popular_images,
+        "database_stats": {
+            "total_images": await coleccion.count_documents({}),
+            "total_users": await user.count_documents({}),
+            "images_with_likes": await coleccion.count_documents({"interactions.likes": {"$gt": 0}})
+        }
+    }
+    
+@app.get("/simple-evaluate/{user_id}")
+async def simple_evaluate(user_id: int):
+    evaluator = SimpleEvaluator(k=5)
+    result = await evaluator.evaluate_user(user_id)
+    
+    if result:
+        return result
+    else:
+        return {"error": "No se pudo evaluar", "user_id": user_id}
 
 @app.get("/system-status")
 async def system_status():
@@ -434,6 +605,65 @@ async def system_status():
         }
     except Exception as e:
         raise HTTPException(500, f"Error obteniendo estado del sistema: {str(e)}")
+
+@app.get("/debug-image/{image_id}")
+async def debug_image(image_id: int):
+    """Debug de una imagen específica"""
+    try:
+        image_data = await coleccion.find_one({"image_id": image_id})
+        if not image_data:
+            return {"error": "Imagen no encontrada"}
+        
+        return {
+            "image_id": image_id,
+            "fields": list(image_data.keys()),
+            "liked_by": image_data.get("liked_by", []),
+            "liked_by_count": len(image_data.get("liked_by", [])),
+            "has_interactions": "interactions" in image_data,
+            "interactions": image_data.get("interactions", {})
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/simple-evaluate/{user_id}")
+async def simple_evaluate(user_id: int):
+    result = await simple_evaluator.evaluate_user(user_id)
+    return result
+
+@app.get("/evaluate-model/{user_id}")
+async def evaluate_model(user_id: int):
+    """Evaluar el modelo completo con graph recommender"""
+    try:
+        evaluator = RecommenderEvaluator(k=5)
+        result = await evaluator.evaluate_single_user(user_id, graph_recommender)
+        
+        if result:
+            return result
+        else:
+            return {
+                "error": "No se pudo evaluar el modelo",
+                "user_id": user_id
+            }
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/evaluate-all-users")
+async def evaluate_all_users():
+    """Evaluar el modelo para todos los usuarios"""
+    try:
+        evaluator = RecommenderEvaluator(k=5)
+        results = await evaluator.evaluate_all_users(graph_recommender)
+        metrics = await evaluator.calculate_metrics(results)
+        
+        return {
+            "metrics": metrics,
+            "users_evaluated": len(results),
+            "sample_results": results[:3]  
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn

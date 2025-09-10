@@ -8,6 +8,8 @@ from bson import ObjectId
 from typing import Optional
 import asyncio
 from models.Pagination import PaginationParams
+from services.evaluation import RecommenderEvaluator
+from services.recommendation_engine import RecommendationEngine
 
 router = APIRouter(prefix="/recommend", tags=["Recommendations"])
 visual_recommender = VisualRecommender()
@@ -269,3 +271,57 @@ async def rebuild_graph():
         }
     except Exception as e:
         raise HTTPException(500, f"Error reconstruyendo grafo: {str(e)}")
+    
+# routers/recommendations.py - Agrega estos endpoints
+from services.evaluation import RecommenderEvaluator
+
+# Crear evaluador global
+evaluator = RecommenderEvaluator(k=10)
+
+@router.get("/evaluate/metrics")
+async def evaluate_metrics():
+    """Endpoint para evaluar las métricas del sistema"""
+    try:
+        results = await evaluator.evaluate_all_users(graph_recommender)
+        metrics = await evaluator.calculate_metrics(results)
+        
+        return {
+            "status": "success",
+            "metrics": metrics,
+            "detailed_results": results[:10]  # Primeros 10 resultados para debug
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error en evaluación: {str(e)}")
+
+@router.get("/evaluate/user/{user_id}")
+async def evaluate_user(user_id: int):
+    """Evalúa las recomendaciones para un usuario específico"""
+    try:
+        # Obtener recomendaciones
+        recommendations = await graph_recommender.recommend_for_user(str(user_id), k=10)
+        rec_ids = [img_id for img_id, score in recommendations]
+        
+        # Obtener ground truth (lo que realmente le gustó al usuario)
+        user_likes = []
+        cursor = coleccion.find({"liked_by": user_id})
+        async for image in cursor:
+            user_likes.append(image.get("image_id"))
+        
+        # Evaluar
+        precision, recall, f1, hits = await evaluator.evaluate_recommendations(
+            user_id, rec_ids, user_likes
+        )
+        
+        return {
+            "user_id": user_id,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "hits": hits,
+            "total_recommendations": len(rec_ids),
+            "total_positives": len(user_likes),
+            "recommendations": rec_ids,
+            "actual_likes": user_likes
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error evaluando usuario: {str(e)}")

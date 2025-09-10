@@ -16,6 +16,7 @@ from utils.auth.oauth import extract_user_id
 import asyncio
 from typing import Optional, List
 from models.Pagination import PaginationParams
+from fastapi import Path
 
 
 feature_extractor = FeatureExtractor()
@@ -63,9 +64,7 @@ async def get_images():
     
     return JSONResponse(content=serializable_response)
 
-@galery.get('/test')
-async def test():
-    return {"message": "✅ Funciona"}
+
 
 from fastapi import HTTPException, Depends, Query
 from typing import Optional
@@ -292,9 +291,10 @@ async def upload_base64_image(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@galery.put("/api/images/{image_id}/interactions", response_model=Image)
+@galery.put("/api/images/{image_id}/interactions/{id}", response_model=Image)
 async def update_interactions(
     image_id: int,
+    id: int, 
     interaction: InteractionUpdate,
     user_data: dict = Depends(extract_user_id)
 ):
@@ -330,7 +330,7 @@ async def update_interactions(
                 status_code=400,
                 detail="Ya has dado like a esta imagen"
             ) """
-        update_operation["$addToSet"] = {"liked_by": user_id}
+        update_operation["$addToSet"] = {"liked_by": id}
 
     # 5. Actualizar la imagen
     update_result = await coleccion.update_one(
@@ -402,14 +402,14 @@ async def add_comment(
     if comment_data.parent_comment_id is None:
         update_operation = {
             "$push": {"comments": new_comment},
-            "$inc": {"interactions.comments": 1},
+            "$inc": {"interactions.comment_count": 1},  # Cambiado de "comments" a "comment_count"
             "$set": {"interactions.last_interaction": datetime.utcnow()}
         }
     else:
         # Si es una respuesta, agregarlo al comentario padre
         update_operation = {
             "$push": {"comments.$[comment].replies": new_comment},
-            "$inc": {"interactions.comments": 1},
+            "$inc": {"interactions.comment_count": 1},  # Cambiado de "comments" a "comment_count"
             "$set": {"interactions.last_interaction": datetime.utcnow()}
         }
     
@@ -447,9 +447,10 @@ async def add_comment(
     updated_image = await coleccion.find_one({"image_id": image_id})
     return updated_image
 
-@galery.delete("/api/images/{image_id}/likes", response_model=Image)
+@galery.delete("/api/images/{image_id}/likes/{id}", response_model=Image)
 async def remove_like(
     image_id: int,
+    id:int,
     user_data: dict = Depends(extract_user_id)
 ):
     user_id = user_data["user_id"]
@@ -466,7 +467,7 @@ async def remove_like(
     
     # Verificar si el usuario tiene like en esta imagen
     liked_by = image.get("liked_by", [])
-    if user_id not in liked_by:
+    if id not in liked_by:
         raise HTTPException(
             status_code=400,
             detail="No tienes like en esta imagen"
@@ -474,7 +475,7 @@ async def remove_like(
     
     # Remover el like
     update_operation = {
-        "$pull": {"liked_by": user_id},
+        "$pull": {"liked_by": id},
         "$inc": {"interactions.likes": -1},
         "$set": {"interactions.last_interaction": datetime.utcnow()}
     }

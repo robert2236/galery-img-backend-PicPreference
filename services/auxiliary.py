@@ -17,22 +17,58 @@ except ImportError:
             return []
     visual_recommender = DummyVisualRecommender()
 
-async def get_popular_images():
-    """Obtiene imágenes populares"""
+async def get_popular_images(limit=15, min_likes=1):
+    """Obtiene imágenes populares con mejor filtrado"""
     try:
-        popular_images = await coleccion.find(
-            {"interactions.views": {"$gt": 0}}
-        ).sort("interactions.likes", -1).limit(15).to_list(None)
+        pipeline = [
+            {"$match": {"interactions.likes": {"$gte": min_likes}}},
+            {"$addFields": {
+                "popularity_score": {
+                    "$add": [
+                        {"$multiply": ["$interactions.likes", 2]},
+                        "$interactions.views",
+                        {"$cond": [{"$gt": ["$interactions.saves", 0]}, 5, 0]}
+                    ]
+                }
+            }},
+            {"$sort": {"popularity_score": -1}},
+            {"$limit": limit},
+            {"$project": {
+                "image_id": 1,
+                "title": 1,
+                "image_url": 1,
+                "interactions": 1,
+                "popularity_score": 1,
+                "comments": 1  # Incluir comentarios en la proyección
+            }}
+        ]
+        
+        popular_images = await coleccion.aggregate(pipeline).to_list(None)
         
         serializable_images = []
         for image in popular_images:
-            if "image_id" in image:
-                serializable_images.append({
-                    "image_id": image["image_id"],
-                    "title": image.get("title", "Sin título"),
-                    "image_url": image.get("image_url", ""),
-                    "interactions": image.get("interactions", {})
+            # Procesar comentarios para asegurar formato consistente
+            comments = image.get("comments", [])
+            processed_comments = []
+            
+            for comment in comments:
+                processed_comments.append({
+                    "comment_id": comment.get("comment_id"),
+                    "user_id": comment.get("user_id"),
+                    "comment": comment.get("comment"),
+                    "created_at": comment.get("created_at"),
+                    "parent_comment_id": comment.get("parent_comment_id"),
+                    "likes": comment.get("likes", 0)
                 })
+            
+            serializable_images.append({
+                "image_id": image["image_id"],
+                "title": image.get("title", "Sin título"),
+                "image_url": image.get("image_url", ""),
+                "interactions": image.get("interactions", {}),
+                "popularity_score": image.get("popularity_score", 0),
+                "comments": processed_comments  # Comentarios procesados
+            })
             
         return serializable_images
     except Exception as e:
@@ -66,13 +102,28 @@ async def get_content_based_recommendations(viewed_images: list, limit: int = 5)
                 if similar_id not in viewed_images:
                     image = await coleccion.find_one({"image_id": similar_id})
                     if image:
+                        # Procesar comentarios de la imagen
+                        comments = image.get("comments", [])
+                        processed_comments = []
+                        
+                        for comment in comments:
+                            processed_comments.append({
+                                "comment_id": comment.get("comment_id"),
+                                "user_id": comment.get("user_id"),
+                                "comment": comment.get("comment"),
+                                "created_at": comment.get("created_at"),
+                                "parent_comment_id": comment.get("parent_comment_id"),
+                                "likes": comment.get("likes", 0)
+                            })
+                        
                         recommendations.append({
-                            "id": image["image_id"],
+                            "image_id": image["image_id"],
                             "title": image.get("title", "Sin título"),
                             "image_url": image.get("image_url", ""),
                             "score": 0.8,
                             "type": "content_based",
-                            "source": f"similar_to_{img_id}"
+                            "source": f"similar_to_{img_id}",
+                            "comments": processed_comments  # Comentarios procesados
                         })
         except Exception as e:
             print(f"⚠️ Error en contenido similar para {img_id}: {e}")
@@ -84,8 +135,8 @@ async def get_graph_based_recommendations(user_id: int, viewed_images: list, gra
     recommendations = []
     
     try:
-        if graph_recommender is None or not hasattr(graph_recommender, 'recommend_for_user'):
-            print("❌ graph_recommender no disponible o no tiene el método recommend_for_user")
+        if graph_recommender is None:
+            print("❌ Graph recommender no disponible")
             return recommendations
             
         graph_recs = graph_recommender.recommend_for_user(user_id, k=limit * 2)
@@ -96,13 +147,28 @@ async def get_graph_based_recommendations(user_id: int, viewed_images: list, gra
                 if img_id_int not in viewed_images:
                     image = await coleccion.find_one({"image_id": img_id_int})
                     if image:
+                        # Procesar comentarios de la imagen
+                        comments = image.get("comments", [])
+                        processed_comments = []
+                        
+                        for comment in comments:
+                            processed_comments.append({
+                                "comment_id": comment.get("comment_id"),
+                                "user_id": comment.get("user_id"),
+                                "comment": comment.get("comment"),
+                                "created_at": comment.get("created_at"),
+                                "parent_comment_id": comment.get("parent_comment_id"),
+                                "likes": comment.get("likes", 0)
+                            })
+                        
                         recommendations.append({
-                            "id": image["image_id"],
+                            "image_id": image["image_id"],
                             "title": image.get("title", "Sin título"),
                             "image_url": image.get("image_url", ""),
                             "score": float(score) * 0.7,
                             "type": "behavioral",
-                            "source": "user_similarity"
+                            "source": "user_similarity",
+                            "comments": processed_comments  # Comentarios procesados
                         })
             except (ValueError, TypeError) as e:
                 print(f"⚠️ Error procesando imagen ID {img_id}: {e}")
@@ -122,12 +188,13 @@ async def get_popular_recommendations(viewed_images: list, limit: int = 5):
         for pop_img in popular_images[:limit * 2]:
             if pop_img["image_id"] not in viewed_images:
                 recommendations.append({
-                    "id": pop_img["image_id"],
+                    "image_id": pop_img["image_id"],
                     "title": pop_img.get("title", "Sin título"),
                     "image_url": pop_img.get("image_url", ""),
                     "score": 0.5,
                     "type": "popular",
-                    "source": "trending"
+                    "source": "trending",
+                    "comments": pop_img.get("comments", [])  # Comentarios ya procesados
                 })
     except Exception as e:
         print(f"⚠️ Error en recomendaciones populares: {e}")
@@ -140,8 +207,80 @@ def remove_duplicates(recommendations: list):
     seen_ids = set()
     
     for rec in recommendations:
-        if rec["id"] not in seen_ids:
-            seen_ids.add(rec["id"])
+        if rec["image_id"] not in seen_ids:
+            seen_ids.add(rec["image_id"])
             unique_recs.append(rec)
     
     return unique_recs
+
+# =============================================================================
+# FUNCIONES ADICIONALES PARA MANEJO DE COMENTARIOS
+# =============================================================================
+
+async def add_comment_to_image(image_id: int, user_id: str, comment_text: str, parent_comment_id=None):
+    """Añade un comentario a una imagen"""
+    try:
+        # Generar un ID único para el comentario
+        comment_id = int(datetime.now().timestamp())
+        
+        new_comment = {
+            "comment_id": comment_id,
+            "user_id": user_id,
+            "comment": comment_text,
+            "created_at": datetime.now(),
+            "parent_comment_id": parent_comment_id,
+            "likes": 0
+        }
+        
+        # Actualizar la imagen con el nuevo comentario
+        result = await coleccion.update_one(
+            {"image_id": image_id},
+            {"$push": {"comments": new_comment}}
+        )
+        
+        if result.modified_count > 0:
+            return new_comment
+        else:
+            print(f"⚠️ No se pudo agregar comentario a la imagen {image_id}")
+            return None
+            
+    except Exception as e:
+        print(f"Error añadiendo comentario: {e}")
+        return None
+
+async def get_image_comments(image_id: int, limit: int = 50):
+    """Obtiene los comentarios de una imagen específica"""
+    try:
+        image = await coleccion.find_one(
+            {"image_id": image_id},
+            {"comments": 1, "_id": 0}
+        )
+        
+        if image and "comments" in image:
+            # Ordenar comentarios por fecha (más recientes primero)
+            comments = sorted(
+                image["comments"], 
+                key=lambda x: x.get("created_at", datetime.min), 
+                reverse=True
+            )
+            return comments[:limit]
+        
+        return []
+        
+    except Exception as e:
+        print(f"Error obteniendo comentarios: {e}")
+        return []
+
+async def like_comment(image_id: int, comment_id: int):
+    """Incrementa el contador de likes de un comentario"""
+    try:
+        result = await coleccion.update_one(
+            {"image_id": image_id, "comments.comment_id": comment_id},
+            {"$inc": {"comments.$.likes": 1}}
+        )
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        print(f"Error dando like al comentario: {e}")
+        return False

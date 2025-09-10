@@ -168,14 +168,14 @@ def test_recommendations():
 
         # 7. Probar recomendaciones para usuario (user_id dinámico)
         print(f"\n8. 👤 Probando recomendaciones para usuario (ID: {user_id})...")
-        response = requests.get(f"{BASE_URL}/recommend/user/{user_id}?limit=3", headers=auth_headers)
+        response = requests.get(f"{BASE_URL}/recommend/user/{user_id}?limit=20", headers=auth_headers)
         if response.status_code == 200:
             user_recs = response.json()
             rec_count = len(user_recs.get('recommendations', []))
             print(f"   ✅ Recomendaciones para usuario {user_id}: {rec_count}")
             
             if rec_count > 0:
-                for i, rec in enumerate(user_recs.get('recommendations', [])[:3]):
+                for i, rec in enumerate(user_recs.get('recommendations', [])[:20]):
                     print(f"      {i+1}. {rec.get('title', 'Sin título')} (score: {rec.get('score', 0):.2f})")
             else:
                 print("      ⚠️ No se encontraron recomendaciones para el usuario")

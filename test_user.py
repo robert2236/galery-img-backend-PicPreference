@@ -11,7 +11,7 @@ async def create_test_users(num_users=15):
     # Lista para almacenar las credenciales
     credentials = []
     
-    for i in range(1, num_users + 1):
+    for i in range(1, num_users + 2):
         # Generar datos únicos para cada usuario
         username = f"testuser{i}"
         email = f"test{i}@example.com"
