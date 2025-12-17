@@ -1,23 +1,35 @@
-from fastapi import APIRouter, HTTPException, Depends,status
+from fastapi import APIRouter, HTTPException, Depends,status, BackgroundTasks
 from database.galery import (get_all_images,create_image, get_one_image,delete_image)
 from models.galery import Image,UpdateImage,ImageResponse,InteractionUpdate, CommentCreate
 from models.users import User
 from database.databases import user,coleccion
 from utils.auth.oauth import get_current_user
 import base64
-from datetime import datetime
 import random
 from datetime import datetime, timedelta
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from utils.feature_extractor import FeatureExtractor  # Asegúrate de importar tu extractor
+from utils.feature_extractor import FeatureExtractor 
 import numpy as np
 from utils.auth.oauth import extract_user_id
 import asyncio
 from typing import Optional, List
 from models.Pagination import PaginationParams
 from fastapi import Path
-
+from fastapi import HTTPException, Depends, Query
+from typing import Optional
+from datetime import datetime
+import uuid
+from pathlib import Path as PathLib
+import os
+from bson import ObjectId
+try:
+    from services.ai_processor import ai_processor
+    from services.ai_image_processor import ImageAIAnalyzer
+    from services.ai_comment_analyzer import CommentAIAnalyzer
+except ImportError:
+    ai_processor = None
+    print("⚠️ Advertencia: Módulos de IA no disponibles")
 
 feature_extractor = FeatureExtractor()
 
@@ -27,6 +39,370 @@ image_cache = None
 cache_timestamp = None
 CACHE_DURATION = 10  # 5 minutos en segundos
 
+# Clase para manejar los parámetros de paginación
+class PaginationParams:
+    def __init__(
+        self,
+        skip: int = Query(0, ge=0, description="Número de elementos a saltar"),
+        limit: int = Query(20, ge=1, le=100, description="Límite de resultados por página"),
+        page: int = Query(1, ge=1, description="Número de página (alternativo a skip)")
+    ):
+        self.limit = limit
+        # Si se proporciona page, calcular skip automáticamente
+        if page > 1:
+            self.skip = (page - 1) * limit
+        else:
+            self.skip = skip
+        self.page = page if page > 1 else (skip // limit) + 1
+
+# ============ FUNCIONES AUXILIARES ============
+
+async def save_base64_image(base64_str: str) -> tuple:
+    """
+    Guarda una imagen en base64 y devuelve (filename, filepath)
+    """
+    try:
+        # Extraer datos base64
+        if "base64," in base64_str:
+            # Formato: data:image/png;base64,iVBORw0KGgo...
+            header, data = base64_str.split("base64,")
+            mime_type = header.split(":")[1].split(";")[0]
+        else:
+            # Base64 puro
+            data = base64_str
+            mime_type = "image/jpeg"
+        
+        # Determinar extensión
+        ext_map = {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp"
+        }
+        extension = ext_map.get(mime_type, "jpg")
+        
+        # Crear directorio si no existe
+        upload_dir = "uploads"
+        PathLib(upload_dir).mkdir(exist_ok=True)
+        
+        # Generar nombre único
+        filename = f"{uuid.uuid4().hex}.{extension}"
+        filepath = os.path.join(upload_dir, filename)
+        
+        # Decodificar y guardar
+        image_data = base64.b64decode(data)
+        with open(filepath, "wb") as f:
+            f.write(image_data)
+        
+        return filename, filepath
+        
+    except Exception as e:
+        raise ValueError(f"Error procesando base64: {str(e)}")
+
+async def process_image_ai_background(image_id: str, image_path: str):
+    """
+    Procesa una imagen con IA en segundo plano - VERSIÓN CORREGIDA
+    """
+    if not ai_processor:
+        print("⚠️ IA no disponible, omitiendo procesamiento")
+        return
+    
+    try:
+        print(f"🚀 Iniciando procesamiento IA para imagen {image_id}")
+        
+        # 1. Actualizar estado a processing
+        update_result = await coleccion.update_one(
+            {"_id": ObjectId(image_id)},
+            {"$set": {"ai_features.status": "processing"}}
+        )
+        
+        print(f"📊 Update result (processing): matched={update_result.matched_count}, modified={update_result.modified_count}")
+        
+        # 2. Procesar con IA
+        print("🖼️ Llamando a ai_processor.process_image()...")
+        ai_features = await ai_processor.process_image(image_path)
+        
+        print(f"📊 Resultados IA obtenidos:")
+        print(f"   - Tags: {ai_features.get('auto_tags', [])}")
+        print(f"   - Scene: {ai_features.get('scene_type')}")
+        print(f"   - Colors: {ai_features.get('color_palette', [])}")
+        
+        # 3. Actualizar en base de datos
+        update_result = await coleccion.update_one(
+            {"_id": ObjectId(image_id)},
+            {
+                "$set": {
+                    "ai_features": {
+                        **ai_features,
+                        "status": "completed",
+                        "processed_at": datetime.utcnow().isoformat(),
+                        "model_version": "v1.0"
+                    }
+                }
+            }
+        )
+        
+        print(f"📊 Update result (completed): matched={update_result.matched_count}, modified={update_result.modified_count}")
+        
+        if update_result.modified_count > 0:
+            print(f"✅ IA completada y guardada para {image_id}")
+            print(f"   Etiquetas: {ai_features.get('auto_tags', [])}")
+        else:
+            print(f"⚠️ No se pudo actualizar la imagen {image_id}")
+            print(f"   ¿Existe el documento?")
+            
+    except Exception as e:
+        print(f"❌ Error en IA para {image_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            await coleccion.update_one(
+                {"_id": ObjectId(image_id)},
+                {
+                    "$set": {
+                        "ai_features.status": "failed",
+                        "ai_features.error": str(e)[:200]
+                    }
+                }
+            )
+        except:
+            pass
+
+async def update_social_features_background(image_id: str):
+    """
+    Actualiza análisis social de comentarios en background
+    """
+    if not ai_processor:
+        return
+    
+    try:
+        image = await coleccion.find_one({"_id": image_id})
+        
+        if not image:
+            return
+        
+        comments = image.get("comments", [])
+        
+        # Formatear comentarios para el analizador
+        formatted_comments = []
+        for comment in comments:
+            formatted_comments.append({
+                "text": comment.get("comment", "")
+            })
+        
+        # Procesar comentarios con IA
+        social_features = await ai_processor.process_comments(formatted_comments)
+        
+        # Actualizar en base de datos
+        await coleccion.update_one(
+            {"_id": image_id},
+            {"$set": {"social_features": social_features}}
+        )
+        
+        print(f"✅ Análisis social actualizado para {image_id}")
+        
+    except Exception as e:
+        print(f"❌ Error actualizando análisis social: {str(e)}")
+
+# ============ ENDPOINT PRINCIPAL ACTUALIZADO ============
+
+@galery.post('/api/create_image', response_model=Image)
+async def save_image(
+    img: Image,
+    background_tasks: BackgroundTasks
+):
+    """
+    Endpoint para crear una nueva imagen con procesamiento de IA
+    """
+    # 1. Verificar si el usuario existe
+    user_exists = await user.find_one({"user_id": img.user_id})
+    user_data = await user.find_one({"user_id": img.user_id})
+    
+    if not user_exists:
+        raise HTTPException(status_code=404, detail="Usuario inválido")
+    
+    # 2. Verificar si la imagen ya existe (si es URL)
+    if img.image_url and not img.image_url.startswith("data:image"):
+        imgFound = await get_one_image(img.image_url)
+        if imgFound:
+            raise HTTPException(409, "Image already exists")
+    
+    # 3. Procesar base64 si aplica
+    is_base64 = False
+    saved_filepath = None
+    final_image_url = img.image_url
+    
+    if img.image_url and img.image_url.startswith("data:image"):
+        is_base64 = True
+        try:
+            filename, saved_filepath = await save_base64_image(img.image_url)
+            # Actualizar image_url para apuntar al archivo guardado
+            final_image_url = f"/uploads/{filename}"
+        except ValueError as e:
+            raise HTTPException(400, f"Base64 inválido: {str(e)}")
+    
+    # 4. Extraer características visuales (FEATURES - código existente)
+    features_list = []
+    try:
+        # Tu feature_extractor existente
+        if img.image_url and not img.image_url.startswith("data:image"):
+            features = feature_extractor.extract(img.image_url)
+        elif saved_filepath:
+            features = feature_extractor.extract(saved_filepath)
+        else:
+            features = []
+        
+        features_array = np.array(features)
+        features_list = features_array.tolist()
+    except Exception as e:
+        print(f"⚠️ Error al extraer características: {str(e)}")
+        # No lanzamos excepción, continuamos sin features
+    
+    # 5. Preparar los datos de la imagen para guardar
+    img_data = img.dict(by_alias=True, exclude_none=True)
+    
+    # Actualizar image_url si era base64
+    if is_base64:
+        img_data["image_url"] = final_image_url
+    
+    # Añadir campos adicionales
+    img_data.update({
+        "upload_date": datetime.utcnow(),
+        "username": user_data.get("username", "Usuario"),
+        "image_id": random.randint(1000, 9999),
+        "features": features_list,
+        "title": img.title if img.title else "Imagen sin título",
+        
+        # Campos de IA
+        "ai_features": {
+            "visual_embedding": [],
+            "auto_tags": [],
+            "detected_objects": [],
+            "color_palette": [],
+            "scene_type": None,
+            "status": "pending",
+            "source": "base64" if is_base64 else "url",
+            "processed_at": None
+        },
+        
+        "social_features": {
+            "comment_sentiment": 0.0,
+            "comment_keywords": [],
+            "popularity_score": 0.0,
+            "last_updated": None
+        },
+        
+        "interactions": img_data.get("interactions", {
+            "likes": 0,
+            "downloads": 0,
+            "views": 0,
+            "last_interaction": None
+        }),
+        
+        "liked_by": img_data.get("liked_by", []),
+        "comments": img_data.get("comments", [])
+    })
+    
+    # 6. Guardar en la base de datos
+    response = await create_image(img_data)
+    
+    if not response:
+        raise HTTPException(400, "Something went wrong")
+    
+    # 7. Programar procesamiento IA en background (si hay archivo)
+    if saved_filepath and ai_processor:
+        background_tasks.add_task(
+            process_image_ai_background,
+            str(response.get("_id")),
+            saved_filepath
+        )
+        print(f"✅ Procesamiento IA programado para imagen {response.get('_id')}")
+    else:
+        print("⚠️ Procesamiento IA no disponible para esta imagen")
+    
+    # 8. Si es una URL externa (no base64), intentar procesar también
+    if img.image_url and img.image_url.startswith(("http://", "https://")) and ai_processor:
+        # Importar aquí para evitar dependencia si no se usa
+        import aiohttp
+        import tempfile
+        
+        async def process_external_url():
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(img.image_url, timeout=10) as resp:
+                        if resp.status == 200:
+                            image_data = await resp.read()
+                            
+                            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                                tmp_file.write(image_data)
+                                tmp_path = tmp_file.name
+                            
+                            await process_image_ai_background(str(response.get("_id")), tmp_path)
+                            
+                            import os
+                            os.unlink(tmp_path)
+                            
+            except Exception as e:
+                print(f"❌ Error procesando URL {img.image_url}: {str(e)}")
+        
+        background_tasks.add_task(process_external_url)
+    
+    return response
+
+@galery.get('/api/image/{image_id}/ai-analysis')
+async def get_ai_analysis(image_id: str):
+    """
+    Obtener análisis AI de una imagen
+    """
+    image = await coleccion.find_one({"_id": image_id})
+    if not image:
+        raise HTTPException(404, "Imagen no encontrada")
+    
+    ai_features = image.get("ai_features", {})
+    social_features = image.get("social_features", {})
+    
+    return {
+        "image_id": image_id,
+        "title": image.get("title"),
+        "ai_status": ai_features.get("status", "pending"),
+        "ai_analysis": {
+            "tags": ai_features.get("auto_tags", []),
+            "scene": ai_features.get("scene_type"),
+            "objects": ai_features.get("detected_objects", []),
+            "colors": ai_features.get("color_palette", []),
+            "embedding_length": len(ai_features.get("visual_embedding", [])),
+            "processed_at": ai_features.get("processed_at")
+        } if ai_features.get("status") == "completed" else None,
+        "social_analysis": {
+            "sentiment": social_features.get("comment_sentiment", 0.0),
+            "keywords": social_features.get("comment_keywords", []),
+            "popularity": social_features.get("popularity_score", 0.0),
+            "last_updated": social_features.get("last_updated")
+        }
+    }
+    
+# ============ ENDPOINT PARA VERIFICAR IA ============
+
+@galery.get('/api/ai/status')
+async def check_ai_status():
+    """
+    Verificar estado del sistema de IA
+    """
+    if ai_processor:
+        status = ai_processor.get_system_status()
+        return {
+            "available": True,
+            "initialized": status.get("initialized", False),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    else:
+        return {
+            "available": False,
+            "message": "Sistema de IA no configurado",
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
 @galery.get('/api/images')
@@ -65,26 +441,6 @@ async def get_images():
     return JSONResponse(content=serializable_response)
 
 
-
-from fastapi import HTTPException, Depends, Query
-from typing import Optional
-from datetime import datetime
-
-# Clase para manejar los parámetros de paginación
-class PaginationParams:
-    def __init__(
-        self,
-        skip: int = Query(0, ge=0, description="Número de elementos a saltar"),
-        limit: int = Query(20, ge=1, le=100, description="Límite de resultados por página"),
-        page: int = Query(1, ge=1, description="Número de página (alternativo a skip)")
-    ):
-        self.limit = limit
-        # Si se proporciona page, calcular skip automáticamente
-        if page > 1:
-            self.skip = (page - 1) * limit
-        else:
-            self.skip = skip
-        self.page = page if page > 1 else (skip // limit) + 1
 
 @galery.get('/api/images/search')
 async def search_images(
@@ -210,7 +566,7 @@ async def search_images(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en búsqueda: {str(e)}")
     
-@galery.post('/api/create_image', response_model=Image)
+""" @galery.post('/api/create_image', response_model=Image)
 async def save_image(img: Image):
     # 1. Verificar si el usuario existe
     user_exists = await user.find_one({"user_id": img.user_id})
@@ -248,7 +604,7 @@ async def save_image(img: Image):
     
     if response:
         return response
-    raise HTTPException(400, "Something went wrong")
+    raise HTTPException(400, "Something went wrong") """
 
 @galery.put('/api/images/{id}', response_model=Image)
 async def put_img(id: str, data: UpdateImage):
@@ -368,9 +724,11 @@ async def update_interactions(
 
 @galery.put("/api/images/{image_id}/comments", response_model=Image)
 async def add_comment(
+     background_tasks: BackgroundTasks,
     image_id: int,
     comment_data: CommentCreate,
-    user_data: dict = Depends(extract_user_id)
+    user_data: dict = Depends(extract_user_id),
+   
 ):
     user_id = user_data["user_id"]
     
@@ -402,14 +760,14 @@ async def add_comment(
     if comment_data.parent_comment_id is None:
         update_operation = {
             "$push": {"comments": new_comment},
-            "$inc": {"interactions.comment_count": 1},  # Cambiado de "comments" a "comment_count"
+            "$inc": {"interactions.comment_count": 1},
             "$set": {"interactions.last_interaction": datetime.utcnow()}
         }
     else:
         # Si es una respuesta, agregarlo al comentario padre
         update_operation = {
             "$push": {"comments.$[comment].replies": new_comment},
-            "$inc": {"interactions.comment_count": 1},  # Cambiado de "comments" a "comment_count"
+            "$inc": {"interactions.comment_count": 1},
             "$set": {"interactions.last_interaction": datetime.utcnow()}
         }
     
@@ -442,6 +800,17 @@ async def add_comment(
             "$set": {"last_updated": datetime.utcnow()}
         }
     )
+    
+    # 🎯 ¡AÑADIR ESTO! - Programar análisis social en background
+    if background_tasks and ai_processor:
+        # Necesitamos el ObjectId de la imagen, no el image_id numérico
+        image_doc = await coleccion.find_one({"image_id": image_id})
+        if image_doc:
+            print(f"🎯 Programando análisis social para imagen {image_doc['_id']}")
+            background_tasks.add_task(
+                update_social_features_background,
+                str(image_doc["_id"])  # Pasar el ObjectId como string
+            )
     
     # Devolver la imagen actualizada
     updated_image = await coleccion.find_one({"image_id": image_id})

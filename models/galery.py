@@ -46,8 +46,28 @@ class Image(BaseModel):
             "last_interaction": None
         }
     )
+    
+    ai_features: Optional[dict] = Field(
+        default_factory=lambda: {
+            "visual_embedding": [],
+            "auto_tags": [],
+            "detected_objects": [],
+            "color_palette": [],
+            "scene_type": None
+        }
+    )
+    
+    social_features: Optional[dict] = Field(
+        default_factory=lambda: {
+            "comment_sentiment": 0.0,
+            "comment_keywords": [],
+            "popularity_score": 0.0
+        }
+    )
+    
     liked_by: List[Union[str, int]] = Field(default_factory=list)
     comments: List[Dict[str, Any]] = []
+    
 
 
 
