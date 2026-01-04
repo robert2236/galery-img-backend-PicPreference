@@ -6,6 +6,7 @@ from routers.users import users
 from routers.galery import galery
 from routers.category import category
 from routers.recommendations import router as recommendations_router
+from routers.dashboard import metrics_router
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from contextlib import asynccontextmanager
 from services.genetic import optimize_weights
@@ -172,6 +173,7 @@ app.include_router(users)
 app.include_router(galery)
 app.include_router(category)
 app.include_router(recommendations_router)
+app.include_router(metrics_router)
 
 @app.on_event("startup")
 async def startup_event():

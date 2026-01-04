@@ -1,4 +1,3 @@
-# ai_image_processor.py (modificado)
 import torch
 import torchvision.models as models
 import torchvision.transforms as transforms

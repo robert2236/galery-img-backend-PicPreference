@@ -170,41 +170,84 @@ async def process_image_ai_background(image_id: str, image_path: str):
         except:
             pass
 
-async def update_social_features_background(image_id: str):
+async def update_social_features_background(image_id_str: str):
     """
-    Actualiza análisis social de comentarios en background
+    Actualiza análisis social de comentarios en background - VERSIÓN CORREGIDA
     """
     if not ai_processor:
+        print("⚠️ IA no disponible para análisis social")
         return
     
     try:
-        image = await coleccion.find_one({"_id": image_id})
+        print(f"🔍 Iniciando análisis social para: {image_id_str}")
         
-        if not image:
+        # CONVERTIR string a ObjectId
+        try:
+            object_id = ObjectId(image_id_str)
+            print(f"   ✅ String convertido a ObjectId: {object_id}")
+        except Exception as e:
+            print(f"❌ Error convirtiendo a ObjectId: {e}")
             return
         
+        # Buscar usando ObjectId
+        image = await coleccion.find_one({"_id": object_id})
+        
+        if not image:
+            print(f"❌ Imagen no encontrada con ObjectId: {object_id}")
+            return
+        
+        print(f"✅ Imagen encontrada: {image.get('title', 'Sin título')}")
+        
         comments = image.get("comments", [])
+        print(f"📝 Total de comentarios: {len(comments)}")
+        
+        if not comments:
+            print("⚠️ No hay comentarios para analizar")
+            return
+        
+        # Mostrar comentarios
+        for i, comment in enumerate(comments[:3]):  # Mostrar solo 3
+            text = comment.get("comment", "")
+            print(f"   {i+1}. {text[:80]}...")
         
         # Formatear comentarios para el analizador
         formatted_comments = []
         for comment in comments:
-            formatted_comments.append({
-                "text": comment.get("comment", "")
-            })
+            text = comment.get("comment", "")
+            if text and text.strip():  # Solo comentarios con texto
+                formatted_comments.append({"text": text.strip()})
+        
+        print(f"🤖 Enviando {len(formatted_comments)} comentarios a IA...")
         
         # Procesar comentarios con IA
         social_features = await ai_processor.process_comments(formatted_comments)
         
+        print(f"📊 Resultados IA obtenidos:")
+        print(f"   - Sentimiento: {social_features.get('sentiment_score', 0):.2f}")
+        print(f"   - Keywords: {social_features.get('keywords', [])}")
+        print(f"   - Popularidad: {social_features.get('popularity_score', 0):.2f}")
+        
+        # Añadir timestamp
+        social_features["last_updated"] = datetime.utcnow().isoformat()
+        
         # Actualizar en base de datos
-        await coleccion.update_one(
-            {"_id": image_id},
+        update_result = await coleccion.update_one(
+            {"_id": object_id},
             {"$set": {"social_features": social_features}}
         )
         
-        print(f"✅ Análisis social actualizado para {image_id}")
+        print(f"📊 Resultado update: matched={update_result.matched_count}, modified={update_result.modified_count}")
+        
+        if update_result.modified_count > 0:
+            print(f"✅ Análisis social guardado exitosamente")
+            print(f"   Se actualizó: {update_result.modified_count} documento(s)")
+        else:
+            print(f"⚠️ No se pudo actualizar (matched: {update_result.matched_count})")
         
     except Exception as e:
-        print(f"❌ Error actualizando análisis social: {str(e)}")
+        print(f"❌ Error crítico en análisis social: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 # ============ ENDPOINT PRINCIPAL ACTUALIZADO ============
 
@@ -724,23 +767,26 @@ async def update_interactions(
 
 @galery.put("/api/images/{image_id}/comments", response_model=Image)
 async def add_comment(
-     background_tasks: BackgroundTasks,
+    background_tasks: BackgroundTasks,
     image_id: int,
     comment_data: CommentCreate,
-    user_data: dict = Depends(extract_user_id),
-   
+    user_data: dict = Depends(extract_user_id)
 ):
     user_id = user_data["user_id"]
+    
+    print(f"🎯 Iniciando add_comment para imagen {image_id}, usuario {user_id}")
     
     # Verificar que el usuario existe
     usuario = await user.find_one({"username": user_id})
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     
-    # Verificar que la imagen existe
+    # Verificar que la imagen existe (por image_id numérico)
     image = await coleccion.find_one({"image_id": image_id})
     if not image:
         raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    
+    print(f"📊 Imagen encontrada. ObjectId: {image['_id']}, title: {image.get('title', 'Sin título')}")
     
     # Generar ID único para el comentario
     comment_id = datetime.utcnow().timestamp()
@@ -755,6 +801,8 @@ async def add_comment(
         "likes": 0,
         "replies": []
     }
+    
+    print(f"💬 Nuevo comentario: {comment_data.comment[:50]}...")
     
     # Si es un comentario padre, agregarlo al array principal
     if comment_data.parent_comment_id is None:
@@ -771,7 +819,7 @@ async def add_comment(
             "$set": {"interactions.last_interaction": datetime.utcnow()}
         }
     
-    # Actualizar la imagen
+    # Actualizar la imagen (por image_id numérico)
     if comment_data.parent_comment_id is None:
         update_result = await coleccion.update_one(
             {"image_id": image_id},
@@ -792,6 +840,8 @@ async def add_comment(
             )
         raise HTTPException(status_code=404, detail="Imagen no encontrada")
     
+    print(f"✅ Comentario agregado. Modified count: {update_result.modified_count}")
+    
     # Actualizar el usuario
     await user.update_one(
         {"username": user_id},
@@ -801,16 +851,17 @@ async def add_comment(
         }
     )
     
-    # 🎯 ¡AÑADIR ESTO! - Programar análisis social en background
+    # 🎯 ¡IMPORTANTE! - Pasar el ObjectId CORRECTO
     if background_tasks and ai_processor:
-        # Necesitamos el ObjectId de la imagen, no el image_id numérico
-        image_doc = await coleccion.find_one({"image_id": image_id})
-        if image_doc:
-            print(f"🎯 Programando análisis social para imagen {image_doc['_id']}")
-            background_tasks.add_task(
-                update_social_features_background,
-                str(image_doc["_id"])  # Pasar el ObjectId como string
-            )
+        # image ya contiene el documento con el ObjectId
+        object_id_str = str(image["_id"])
+        print(f"🎯 Programando análisis social para ObjectId: {object_id_str}")
+        
+        # Asegurarnos de que la función reciba el ObjectId como string
+        background_tasks.add_task(
+            update_social_features_background,
+            object_id_str  # Esto ya es el string del ObjectId
+        )
     
     # Devolver la imagen actualizada
     updated_image = await coleccion.find_one({"image_id": image_id})
