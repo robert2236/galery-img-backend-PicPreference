@@ -39,7 +39,6 @@ image_cache = None
 cache_timestamp = None
 CACHE_DURATION = 10  # 5 minutos en segundos
 
-# Clase para manejar los parámetros de paginación
 class PaginationParams:
     def __init__(
         self,

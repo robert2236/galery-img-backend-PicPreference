@@ -502,6 +502,1476 @@ class ModelPerformanceEvaluator:
             print(f"Error creando gráficos: {str(e)}")
         
         return charts
+    
+# ============ MÉTODOS NUEVOS PARA GRÁFICAS ADICIONALES ============
+
+
+    @staticmethod
+    async def create_engagement_analysis():
+        try:
+            pipeline = [
+                {
+                    "$match": {
+                        "$or": [
+                            {"interactions.likes": {"$exists": True}},
+                            {"interactions.shares": {"$exists": True}},
+                            {"comments": {"$exists": True}}  # Cambiado: ahora busca el array comments
+                        ]
+                    }
+                },
+                {
+                    "$project": {
+                        "category": {"$ifNull": ["$category", "Sin categoría"]},
+                        "likes": {"$ifNull": ["$interactions.likes", 0]},
+                        "comments": {"$size": {"$ifNull": ["$comments", []]}},  # Cambiado: cuenta el array de comentarios
+                        "shares": {"$ifNull": ["$interactions.shares", 0]},
+                        "views": {"$ifNull": ["$interactions.views", 0]},
+                        "title": {"$ifNull": ["$title", "Sin título"]},
+                        "upload_date": 1
+                    }
+                },
+                {
+                    "$match": {
+                        "$or": [
+                            {"likes": {"$gt": 0}},
+                            {"comments": {"$gt": 0}},
+                            {"shares": {"$gt": 0}}
+                        ]
+                    }
+                },
+                {"$limit": 500}
+            ]
+            
+            data = await coleccion.aggregate(pipeline).to_list(length=None)
+            
+            if not data or len(data) == 0:
+                return {
+                    "success": False,
+                    "error": "No hay datos de engagement",
+                    "suggestion": "Asegúrate de que las imágenes tengan campos de interacciones"
+                }
+            
+            df = pd.DataFrame(data)
+            
+            # ====== CONVERSIÓN SEGURA DE TIPOS DE DATOS ======
+            numeric_columns = ['likes', 'comments', 'shares', 'views']
+            
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].fillna(0)
+                    df[col] = df[col].astype(int)
+            
+            if 'category' in df.columns:
+                df['category'] = df['category'].astype(str)
+            
+            # ====== DATOS PARA GRÁFICOS (JSON) ======
+            chart_data = {}
+            
+            # 1. Gráfico de barras: Engagement por categoría
+            if 'category' in df.columns and len(df['category'].unique()) > 1:
+                engagement_by_category = []
+                
+                for category in df['category'].unique():
+                    cat_df = df[df['category'] == category]
+                    
+                    if len(cat_df) > 0:
+                        engagement_by_category.append({
+                            'category': category,
+                            'avg_likes': float(cat_df['likes'].mean()),
+                            'avg_comments': float(cat_df['comments'].mean()),
+                            'avg_shares': float(cat_df['shares'].mean()),
+                            'image_count': len(cat_df)
+                        })
+                
+                if engagement_by_category:
+                    # Ordenar por likes (descendente) y limitar a top 10
+                    engagement_by_category_sorted = sorted(
+                        engagement_by_category, 
+                        key=lambda x: x['avg_likes'], 
+                        reverse=True
+                    )[:10]
+                    
+                    chart_data["engagement_by_category"] = {
+                        "type": "bar",
+                        "title": "📊 Engagement Promedio por Categoría (Top 10)",
+                        "xAxis": {
+                            "title": "Categoría",
+                            "categories": [item['category'] for item in engagement_by_category_sorted]
+                        },
+                        "yAxis": {
+                            "title": "Engagement Promedio"
+                        },
+                        "series": [
+                            {
+                                "name": "Likes",
+                                "data": [item['avg_likes'] for item in engagement_by_category_sorted],
+                                "color": "#3498db"
+                            },
+                            {
+                                "name": "Comentarios",
+                                "data": [item['avg_comments'] for item in engagement_by_category_sorted],
+                                "color": "#2ecc71"
+                            },
+                            {
+                                "name": "Shares",
+                                "data": [item['avg_shares'] for item in engagement_by_category_sorted],
+                                "color": "#9b59b6"
+                            }
+                        ]
+                    }
+            
+            #2 Scatter data
+            scatter_data = df[(df['likes'] > 0) & (df['comments'] > 0)].copy()
+            
+            print(f"📊 Datos para scatter plot: {len(scatter_data)} imágenes con likes y comentarios")
+            
+            if len(scatter_data) >= 3:  # Reducido a 3 para que sea más flexible
+                if 'category' not in scatter_data.columns:
+                    scatter_data['category'] = 'General'
+                
+                # Preparar datos para Highcharts scatter
+                scatter_points_data = []
+                
+                for idx, (_, row) in enumerate(scatter_data.iterrows()):
+                    scatter_points_data.append([
+                        int(row['likes']),
+                        int(row['comments']),
+                        str(row['title'])[:30] if 'title' in row else f"Imagen {idx+1}",
+                        str(row['category'])
+                    ])
+                
+                chart_data["likes_vs_comments"] = {
+                    "type": "scatter",
+                    "title": "🎯 Relación: Likes vs Comentarios",
+                    "subtitle": f"{len(scatter_data)} imágenes con ambos datos",
+                    "xAxis": {
+                        "title": "Likes",
+                        "min": 0
+                    },
+                    "yAxis": {
+                        "title": "Comentarios",
+                        "min": 0
+                    },
+                    "series": [{
+                        "name": "Imágenes",
+                        "data": scatter_points_data,
+                        "color": "rgba(52, 152, 219, 0.7)",
+                        "marker": {
+                            "radius": 6,
+                            "symbol": "circle"
+                        }
+                    }],
+                    "tooltip": {
+                        "headerFormat": '<b>{point.point.name}</b><br/>',
+                        "pointFormat": 'Likes: <b>{point.x}</b><br/>Comentarios: <b>{point.y}</b><br/>Categoría: {point.category}'
+                    }
+                }
+            else:
+                print(f"⚠️ No hay suficientes datos para scatter plot (necesita al menos 3 imágenes con likes y comentarios)")
+                # Crear un scatter plot con datos de solo likes o solo comentarios
+                scatter_alt_data = df[(df['likes'] > 0) | (df['comments'] > 0)].copy()
+                
+                if len(scatter_alt_data) >= 3:
+                    scatter_points_data = []
+                    
+                    for idx, (_, row) in enumerate(scatter_alt_data.iterrows()):
+                        scatter_points_data.append([
+                            int(row['likes']),
+                            int(row['comments']),
+                            str(row['title'])[:30] if 'title' in row else f"Imagen {idx+1}",
+                            str(row['category']) if 'category' in row else "General"
+                        ])
+                    
+                    chart_data["likes_vs_comments"] = {
+                        "type": "scatter",
+                        "title": "🎯 Relación: Likes vs Comentarios",
+                        "subtitle": f"{len(scatter_alt_data)} imágenes (algunas pueden tener solo likes o comentarios)",
+                        "xAxis": {
+                            "title": "Likes",
+                            "min": 0
+                        },
+                        "yAxis": {
+                            "title": "Comentarios",
+                            "min": 0
+                        },
+                        "series": [{
+                            "name": "Imágenes",
+                            "data": scatter_points_data,
+                            "color": "rgba(52, 152, 219, 0.7)",
+                            "marker": {
+                                "radius": 6
+                            }
+                        }]
+                    }
+            
+            # 3. Top 10 imágenes con más engagement
+            if len(df) >= 3:
+                # Calcular engagement score
+                df['engagement_score'] = (
+                    df['likes'] * 0.5 + 
+                    df['comments'] * 0.3 + 
+                    df['shares'] * 0.2
+                )
+                
+                # Top imágenes
+                top_n = min(10, len(df))
+                top_images = df.nlargest(top_n, 'engagement_score')
+                
+                top_images_data = []
+                for idx, (_, row) in enumerate(top_images.iterrows()):
+                    top_images_data.append({
+                        'id': idx + 1,
+                        'title': str(row['title']) if 'title' in row else f"Imagen {idx+1}",
+                        'likes': int(row['likes']),
+                        'comments': int(row['comments']),
+                        'shares': int(row['shares']) if 'shares' in row else 0,
+                        'engagement_score': float(row['engagement_score']),
+                        'category': str(row['category']) if 'category' in row else "Sin categoría"
+                    })
+                
+                chart_data["top_engagement_images"] = {
+                    "type": "bar",
+                    "title": f"🏆 Top {top_n} Imágenes con Más Engagement",
+                    "xAxis": {
+                        "title": "Imagen",
+                        "categories": [item['title'] for item in top_images_data]
+                    },
+                    "yAxis": {
+                        "title": "Interacciones"
+                    },
+                    "series": [
+                        {
+                            "name": "Likes",
+                            "data": [item['likes'] for item in top_images_data],
+                            "color": "#e74c3c"
+                        },
+                        {
+                            "name": "Comentarios",
+                            "data": [item['comments'] for item in top_images_data],
+                            "color": "#f39c12"
+                        },
+                        {
+                            "name": "Shares",
+                            "data": [item['shares'] for item in top_images_data],
+                            "color": "#3498db"
+                        }
+                    ],
+                    "table_data": top_images_data  # Datos adicionales para tabla
+                }
+            
+            # 4. Distribución de engagement (Box plot)
+            metrics_for_boxplot = []
+            for metric in ['likes', 'comments', 'shares']:
+                if metric in df.columns and df[metric].sum() > 0:
+                    metrics_for_boxplot.append(metric)
+            
+            if len(metrics_for_boxplot) >= 1:
+                boxplot_data = {}
+                for metric in metrics_for_boxplot:
+                    metric_data = df[df[metric] > 0][metric].tolist()
+                    if len(metric_data) > 0:
+                        boxplot_data[metric] = {
+                            "data": [float(x) for x in metric_data],
+                            "color": '#3498db' if metric == 'likes' else 
+                                    '#2ecc71' if metric == 'comments' else '#9b59b6'
+                        }
+                
+                if boxplot_data:
+                    chart_data["engagement_distribution"] = {
+                        "type": "boxplot",
+                        "title": "📦 Distribución de Engagement",
+                        "yAxis": {
+                            "title": "Cantidad"
+                        },
+                        "data": boxplot_data
+                    }
+            
+            # 5. Gráfico de dona: Proporción de tipos de interacción
+            total_interactions = {
+                'Likes': int(df['likes'].sum()),
+                'Comentarios': int(df['comments'].sum()),
+                'Shares': int(df['shares'].sum())
+            }
+            
+            # Filtrar solo los que tienen datos
+            total_interactions_filtered = {k: v for k, v in total_interactions.items() if v > 0}
+            
+            if len(total_interactions_filtered) >= 2:
+                pie_data = []
+                colors = ['#3498db', '#2ecc71', '#9b59b6', '#e74c3c', '#f39c12']
+                
+                for idx, (name, value) in enumerate(total_interactions_filtered.items()):
+                    pie_data.append({
+                        'name': name,
+                        'value': value,
+                        'color': colors[idx % len(colors)],
+                        'percentage': round((value / sum(total_interactions_filtered.values())) * 100, 2)
+                    })
+                
+                chart_data["interaction_proportion"] = {
+                    "type": "pie",
+                    "title": "🍩 Proporción de Tipos de Interacción",
+                    "data": pie_data
+                }
+            
+            # 6. Timeline de engagement (si hay fechas)
+            if 'upload_date' in df.columns:
+                try:
+                    df['upload_date'] = pd.to_datetime(df['upload_date'])
+                    df['date'] = df['upload_date'].dt.date
+                    
+                    # Agrupar por día
+                    daily_stats = df.groupby('date').agg({
+                        'likes': 'sum',
+                        'comments': 'sum',
+                        'shares': 'sum',
+                        'title': 'count'
+                    }).reset_index()
+                    daily_stats.columns = ['date', 'total_likes', 'total_comments', 'total_shares', 'image_count']
+                    
+                    # Ordenar por fecha
+                    daily_stats = daily_stats.sort_values('date')
+                    
+                    if len(daily_stats) >= 3:
+                        timeline_dates = [row['date'].strftime('%Y-%m-%d') for _, row in daily_stats.iterrows()]
+                        
+                        chart_data["engagement_timeline"] = {
+                            "type": "line",
+                            "title": "📈 Evolución Temporal del Engagement",
+                            "xAxis": {
+                                "title": "Fecha",
+                                "categories": timeline_dates
+                            },
+                            "yAxis": {
+                                "title": "Interacciones"
+                            },
+                            "series": [
+                                {
+                                    "name": "Likes",
+                                    "data": [int(row['total_likes']) for _, row in daily_stats.iterrows()],
+                                    "color": "#3498db"
+                                },
+                                {
+                                    "name": "Comentarios",
+                                    "data": [int(row['total_comments']) for _, row in daily_stats.iterrows()],
+                                    "color": "#2ecc71"
+                                },
+                                {
+                                    "name": "Shares",
+                                    "data": [int(row['total_shares']) for _, row in daily_stats.iterrows()],
+                                    "color": "#9b59b6"
+                                }
+                            ]
+                        }
+                except Exception:
+                    # Si hay error con fechas, simplemente omitir
+                    pass
+            
+            # ====== ESTADÍSTICAS RESUMEN ======
+            summary_stats = {
+                "total_images": len(df),
+                "images_with_engagement": int(((df['likes'] > 0) | (df['comments'] > 0) | (df['shares'] > 0)).sum()),
+                "totals": {
+                    "likes": int(df['likes'].sum()),
+                    "comments": int(df['comments'].sum()),
+                    "shares": int(df['shares'].sum()),
+                    "views": int(df['views'].sum()) if 'views' in df.columns else 0
+                },
+                "averages": {
+                    "likes_per_image": float(df['likes'].mean()),
+                    "comments_per_image": float(df['comments'].mean()),
+                    "shares_per_image": float(df['shares'].mean())
+                },
+                "maximums": {
+                    "max_likes": int(df['likes'].max()) if len(df) > 0 else 0,
+                    "max_comments": int(df['comments'].max()) if len(df) > 0 else 0,
+                    "max_shares": int(df['shares'].max()) if len(df) > 0 else 0
+                }
+            }
+            
+            # Imagen más popular
+            if len(df) > 0:
+                max_likes_idx = df['likes'].idxmax()
+                summary_stats["most_popular_image"] = {
+                    "title": df.loc[max_likes_idx, 'title'] if 'title' in df.columns else "N/A",
+                    "likes": int(df.loc[max_likes_idx, 'likes']),
+                    "comments": int(df.loc[max_likes_idx, 'comments']),
+                    "shares": int(df.loc[max_likes_idx, 'shares']),
+                    "category": df.loc[max_likes_idx, 'category'] if 'category' in df.columns else "N/A"
+                }
+            
+            # Categorías más populares
+            if 'category' in df.columns and len(df['category'].unique()) > 1:
+                category_popularity = df.groupby('category').agg({
+                    'likes': 'sum',
+                    'comments': 'sum',
+                    'shares': 'sum'
+                }).sum(axis=1).sort_values(ascending=False).head(3)
+                
+                summary_stats["top_categories"] = [
+                    {
+                        "category": cat,
+                        "total_engagement": int(total)
+                    }
+                    for cat, total in category_popularity.items()
+                ]
+            
+            return {
+                "success": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                "summary": summary_stats,
+                "charts": chart_data,
+                "metadata": {
+                    "chart_count": len(chart_data),
+                    "available_charts": list(chart_data.keys()),
+                    "total_records": len(df),
+                    "categories_count": len(df['category'].unique()) if 'category' in df.columns else 0
+                }
+            }
+            
+        except Exception as e:
+            import traceback
+            return {
+                "success": False,
+                "error": f"Error en análisis de engagement: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+    @staticmethod
+    async def create_temporal_analysis():
+        """Análisis temporal de subida de imágenes - VERSIÓN JSON PARA REACT"""
+        try:
+            pipeline = [
+                {
+                    "$match": {
+                        "upload_date": {"$exists": True}
+                    }
+                },
+                {
+                    "$project": {
+                        "upload_date": 1,
+                        "category": {"$ifNull": ["$category", "Sin categoría"]},
+                        "likes": {"$ifNull": ["$interactions.likes", 0]},
+                        "comments": {"$ifNull": ["$interactions.comments", 0]},
+                        "shares": {"$ifNull": ["$interactions.shares", 0]},
+                        "title": {"$ifNull": ["$title", "Sin título"]}
+                    }
+                },
+                {"$sort": {"upload_date": 1}}
+            ]
+            
+            data = await coleccion.aggregate(pipeline).to_list(length=None)
+            
+            if not data or len(data) == 0:
+                return {
+                    "success": False,
+                    "error": "No hay datos temporales",
+                    "suggestion": "Asegúrate de que las imágenes tengan campo upload_date"
+                }
+            
+            df = pd.DataFrame(data)
+            
+            # Convertir fechas de manera segura
+            try:
+                df['upload_date'] = pd.to_datetime(df['upload_date'], errors='coerce')
+                # Eliminar filas con fechas inválidas
+                df = df.dropna(subset=['upload_date'])
+                
+                if len(df) == 0:
+                    return {
+                        "success": False,
+                        "error": "No hay fechas válidas para análisis"
+                    }
+                    
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Error procesando fechas: {str(e)}"
+                }
+            
+            # Convertir campos numéricos
+            numeric_columns = ['likes', 'comments', 'shares']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].fillna(0)
+                    df[col] = df[col].astype(int)
+            
+            # ====== DATOS PARA GRÁFICOS (JSON) ======
+            chart_data = {}
+            
+            # 1. Línea temporal: Imágenes subidas por día
+            df['date'] = df['upload_date'].dt.date
+            daily_stats = df.groupby('date').agg({
+                '_id': 'count',
+                'likes': 'sum',
+                'comments': 'sum',
+                'shares': 'sum'
+            }).reset_index()
+            daily_stats.columns = ['date', 'image_count', 'total_likes', 'total_comments', 'total_shares']
+            
+            # Ordenar por fecha
+            daily_stats = daily_stats.sort_values('date')
+            
+            if len(daily_stats) >= 2:
+                # Datos para gráfico de líneas
+                dates_str = [date.strftime('%Y-%m-%d') for date in daily_stats['date']]
+                
+                # Calcular promedio móvil (7 días)
+                daily_stats['moving_avg'] = daily_stats['image_count'].rolling(
+                    window=min(7, len(daily_stats)), 
+                    min_periods=1
+                ).mean()
+                
+                chart_data["upload_frequency"] = {
+                    "type": "line",
+                    "title": "📈 Frecuencia de Subida de Imágenes",
+                    "xAxis": {
+                        "title": "Fecha",
+                        "categories": dates_str
+                    },
+                    "yAxis": {
+                        "title": "Imágenes Subidas"
+                    },
+                    "series": [
+                        {
+                            "name": "Imágenes por día",
+                            "data": daily_stats['image_count'].tolist(),
+                            "color": "#3498db",
+                            "type": "line+markers"
+                        },
+                        {
+                            "name": "Promedio Móvil (7 días)",
+                            "data": daily_stats['moving_avg'].tolist(),
+                            "color": "#e74c3c",
+                            "type": "line",
+                            "dashed": True
+                        }
+                    ]
+                }
+            
+            # 2. Heatmap por día de la semana y hora
+            try:
+                df['day_of_week'] = df['upload_date'].dt.day_name()
+                df['hour'] = df['upload_date'].dt.hour
+                
+                # Traducir días al español
+                days_translation = {
+                    'Monday': 'Lunes',
+                    'Tuesday': 'Martes', 
+                    'Wednesday': 'Miércoles',
+                    'Thursday': 'Jueves',
+                    'Friday': 'Viernes',
+                    'Saturday': 'Sábado',
+                    'Sunday': 'Domingo'
+                }
+                df['day_of_week_es'] = df['day_of_week'].map(days_translation)
+                
+                # Agrupar para heatmap
+                heatmap_raw = df.groupby(['day_of_week_es', 'hour']).size().reset_index(name='count')
+                
+                # Crear matriz para heatmap
+                days_order_es = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+                hours = list(range(24))
+                
+                # Inicializar matriz con ceros
+                heatmap_matrix = []
+                for day in days_order_es:
+                    day_data = []
+                    for hour in hours:
+                        value = heatmap_raw[
+                            (heatmap_raw['day_of_week_es'] == day) & 
+                            (heatmap_raw['hour'] == hour)
+                        ]['count'].sum()
+                        day_data.append(int(value))
+                    heatmap_matrix.append(day_data)
+                
+                if sum(sum(row) for row in heatmap_matrix) > 0:
+                    chart_data["activity_heatmap"] = {
+                        "type": "heatmap",
+                        "title": "🔥 Actividad por Día y Hora",
+                        "xAxis": {
+                            "title": "Hora del Día",
+                            "categories": [f"{h:02d}:00" for h in hours]
+                        },
+                        "yAxis": {
+                            "title": "Día de la Semana",
+                            "categories": days_order_es
+                        },
+                        "data": heatmap_matrix,
+                        "colorscale": "Viridis"
+                    }
+            except Exception as e:
+                # Si hay error en heatmap, continuar con otros gráficos
+                print(f"Error en heatmap: {e}")
+            
+            # 3. Gráfico de área: Acumulado de imágenes
+            if len(daily_stats) >= 2:
+                daily_stats['cumulative'] = daily_stats['image_count'].cumsum()
+                
+                chart_data["cumulative_images"] = {
+                    "type": "area",
+                    "title": "📊 Total Acumulado de Imágenes",
+                    "xAxis": {
+                        "title": "Fecha",
+                        "categories": dates_str
+                    },
+                    "yAxis": {
+                        "title": "Imágenes Totales"
+                    },
+                    "series": [
+                        {
+                            "name": "Imágenes acumuladas",
+                            "data": daily_stats['cumulative'].tolist(),
+                            "color": "#27ae60",
+                            "fill": True
+                        }
+                    ]
+                }
+            
+            # 4. Gráfico de barras: Actividad por mes
+            try:
+                df['month'] = df['upload_date'].dt.to_period('M').astype(str)
+                monthly_stats = df.groupby('month').agg({
+                    '_id': 'count',
+                    'likes': 'sum',
+                    'comments': 'sum'
+                }).reset_index()
+                monthly_stats.columns = ['month', 'image_count', 'total_likes', 'total_comments']
+                
+                if len(monthly_stats) >= 2:
+                    chart_data["monthly_activity"] = {
+                        "type": "bar",
+                        "title": "📅 Actividad por Mes",
+                        "xAxis": {
+                            "title": "Mes",
+                            "categories": monthly_stats['month'].tolist()
+                        },
+                        "yAxis": {
+                            "title": "Cantidad"
+                        },
+                        "series": [
+                            {
+                                "name": "Imágenes",
+                                "data": monthly_stats['image_count'].tolist(),
+                                "color": "#3498db"
+                            },
+                            {
+                                "name": "Likes",
+                                "data": monthly_stats['total_likes'].tolist(),
+                                "color": "#e74c3c"
+                            },
+                            {
+                                "name": "Comentarios",
+                                "data": monthly_stats['total_comments'].tolist(),
+                                "color": "#2ecc71"
+                            }
+                        ]
+                    }
+            except Exception as e:
+                print(f"Error en estadísticas mensuales: {e}")
+            
+            # 5. Gráfico de dispersión: Engagement vs Fecha
+            if len(df) >= 5:
+                scatter_temporal = []
+                for _, row in df.iterrows():
+                    scatter_temporal.append({
+                        'date': row['upload_date'].strftime('%Y-%m-%d'),
+                        'likes': int(row['likes']),
+                        'comments': int(row['comments']),
+                        'shares': int(row['shares']),
+                        'total_engagement': int(row['likes'] + row['comments'] + row['shares']),
+                        'category': str(row['category']) if 'category' in row else "General"
+                    })
+                
+                chart_data["engagement_over_time"] = {
+                    "type": "scatter",
+                    "title": "🎯 Engagement por Fecha",
+                    "xAxis": {
+                        "title": "Fecha",
+                        "type": "date"
+                    },
+                    "yAxis": {
+                        "title": "Engagement Total"
+                    },
+                    "data": scatter_temporal
+                }
+            
+            # ====== ESTADÍSTICAS RESUMEN ======
+            summary_stats = {
+                "total_images": len(df),
+                "date_range": {
+                    "first_date": df['upload_date'].min().strftime('%Y-%m-%d') if len(df) > 0 else "N/A",
+                    "last_date": df['upload_date'].max().strftime('%Y-%m-%d') if len(df) > 0 else "N/A",
+                    "days_span": (df['upload_date'].max() - df['upload_date'].min()).days if len(df) > 1 else 0
+                },
+                "daily_stats": {
+                    "avg_images_per_day": float(daily_stats['image_count'].mean()) if len(daily_stats) > 0 else 0,
+                    "max_images_per_day": int(daily_stats['image_count'].max()) if len(daily_stats) > 0 else 0,
+                    "total_days": len(daily_stats)
+                }
+            }
+            
+            # Calcular día y hora más activos si hay heatmap
+            if "activity_heatmap" in chart_data:
+                heatmap_matrix = chart_data["activity_heatmap"]["data"]
+                days_order_es = chart_data["activity_heatmap"]["yAxis"]["categories"]
+                
+                # Encontrar día más activo
+                day_sums = [sum(row) for row in heatmap_matrix]
+                if sum(day_sums) > 0:
+                    busiest_day_idx = day_sums.index(max(day_sums))
+                    busiest_day = days_order_es[busiest_day_idx]
+                    
+                    # Encontrar hora más activa
+                    hour_sums = [sum(col) for col in zip(*heatmap_matrix)]
+                    if sum(hour_sums) > 0:
+                        busiest_hour_idx = hour_sums.index(max(hour_sums))
+                        busiest_hour = f"{busiest_hour_idx:02d}:00"
+                        
+                        summary_stats["activity_patterns"] = {
+                            "busiest_day": busiest_day,
+                            "busiest_hour": busiest_hour,
+                            "peak_activity": int(max(hour_sums))
+                        }
+            
+            # Estadísticas por categoría temporal
+            if 'category' in df.columns and len(df['category'].unique()) > 1:
+                category_trend = df.groupby(['date', 'category']).size().reset_index(name='count')
+                category_trend_pivot = category_trend.pivot(index='date', columns='category', values='count').fillna(0)
+                
+                top_categories = df['category'].value_counts().head(3)
+                summary_stats["top_categories_temporal"] = [
+                    {"category": cat, "count": int(count)} 
+                    for cat, count in top_categories.items()
+                ]
+            
+            return {
+                "success": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                "summary": summary_stats,
+                "charts": chart_data,
+                "metadata": {
+                    "chart_count": len(chart_data),
+                    "available_charts": list(chart_data.keys()),
+                    "date_range_days": summary_stats["date_range"]["days_span"],
+                    "data_points": len(df)
+                }
+            }
+            
+        except Exception as e:
+            import traceback
+            return {
+                "success": False,
+                "error": f"Error en análisis temporal: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    @staticmethod
+    async def create_category_analysis():
+        """Análisis detallado por categorías - VERSIÓN JSON PARA REACT"""
+        try:
+            pipeline = [
+                {
+                    "$match": {
+                        "$or": [
+                            {"category": {"$exists": True, "$ne": None}},
+                            {"ai_features.scene_type": {"$exists": True}}
+                        ]
+                    }
+                },
+                {
+                    "$project": {
+                        "category": {"$ifNull": ["$category", "$ai_features.scene_type", "Sin categoría"]},
+                        "tags": {"$ifNull": ["$tags", []]},
+                        "likes": {"$ifNull": ["$interactions.likes", 0]},
+                        "comments": {"$ifNull": ["$interactions.comments", 0]},
+                        "shares": {"$ifNull": ["$interactions.shares", 0]},
+                        "sentiment_score": {"$ifNull": ["$social_features.sentiment_score", 0]},
+                        "title": {"$ifNull": ["$title", "Sin título"]},
+                        "detected_objects": {"$ifNull": ["$ai_features.detected_objects", []]}
+                    }
+                }
+            ]
+            
+            data = await coleccion.aggregate(pipeline).to_list(length=None)
+            
+            if not data or len(data) == 0:
+                return {
+                    "success": False,
+                    "error": "No hay datos por categoría",
+                    "suggestion": "Asegúrate de que las imágenes tengan categorías asignadas"
+                }
+            
+            df = pd.DataFrame(data)
+            
+            # Convertir campos numéricos de manera segura
+            numeric_columns = ['likes', 'comments', 'shares', 'sentiment_score']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].fillna(0)
+            
+            # Asegurar que category sea string
+            if 'category' in df.columns:
+                df['category'] = df['category'].astype(str).str.strip()
+                # Reemplazar categorías vacías
+                df['category'] = df['category'].replace(['', 'None', 'nan'], 'Sin categoría')
+            
+            # ====== DATOS PARA GRÁFICOS (JSON) ======
+            chart_data = {}
+            
+            # 1. Estadísticas por categoría
+            category_stats_list = []
+            
+            for category in df['category'].unique():
+                cat_df = df[df['category'] == category]
+                
+                if len(cat_df) > 0:
+                    # Calcular estadísticas
+                    stats = {
+                        'category': category,
+                        'image_count': len(cat_df),
+                        'avg_likes': float(cat_df['likes'].mean()),
+                        'avg_comments': float(cat_df['comments'].mean()),
+                        'avg_shares': float(cat_df['shares'].mean()),
+                        'avg_sentiment': float(cat_df['sentiment_score'].mean()),
+                        'total_likes': int(cat_df['likes'].sum()),
+                        'total_comments': int(cat_df['comments'].sum()),
+                        'total_shares': int(cat_df['shares'].sum()),
+                        'engagement_score': float(
+                            (cat_df['likes'].mean() * 0.5) +
+                            (cat_df['comments'].mean() * 0.3) +
+                            (cat_df['shares'].mean() * 0.2)
+                        )
+                    }
+                    
+                    # Calcular objetos más comunes en esta categoría
+                    if 'detected_objects' in cat_df.columns:
+                        all_objects = []
+                        for objects in cat_df['detected_objects']:
+                            if isinstance(objects, list):
+                                all_objects.extend([str(obj).lower() for obj in objects if obj])
+                        
+                        if all_objects:
+                            from collections import Counter
+                            object_counter = Counter(all_objects)
+                            stats['top_objects'] = [
+                                {'object': obj, 'count': count}
+                                for obj, count in object_counter.most_common(5)
+                            ]
+                    
+                    # Calcular etiquetas más comunes
+                    if 'tags' in cat_df.columns:
+                        all_tags = []
+                        for tags in cat_df['tags']:
+                            if isinstance(tags, list):
+                                all_tags.extend([str(tag).lower() for tag in tags if tag])
+                        
+                        if all_tags:
+                            from collections import Counter
+                            tag_counter = Counter(all_tags)
+                            stats['top_tags'] = [
+                                {'tag': tag, 'count': count}
+                                for tag, count in tag_counter.most_common(5)
+                            ]
+                    
+                    category_stats_list.append(stats)
+            
+            if not category_stats_list:
+                return {
+                    "success": False,
+                    "error": "No se pudieron calcular estadísticas por categoría"
+                }
+            
+            # Ordenar por cantidad de imágenes (descendente)
+            category_stats_list.sort(key=lambda x: x['image_count'], reverse=True)
+            
+            # 2. Datos para treemap de categorías
+            top_categories = category_stats_list[:15]  # Limitar a top 15 para visualización
+            
+            chart_data["category_treemap"] = {
+                "type": "treemap",
+                "title": "🌳 Distribución de Categorías",
+                "subtitle": "Tamaño = Cantidad de Imágenes, Color = Engagement",
+                "data": [
+                    {
+                        "category": item['category'],
+                        "value": item['image_count'],
+                        "color_value": item['engagement_score'],
+                        "details": {
+                            "avg_likes": item['avg_likes'],
+                            "avg_comments": item['avg_comments'],
+                            "engagement_score": item['engagement_score']
+                        }
+                    }
+                    for item in top_categories
+                ],
+                "color_scale": "RdYlGn"
+            }
+            
+            # 3. Datos para gráfico de barras: Comparación de categorías
+            if len(category_stats_list) >= 3:
+                top_for_bar = category_stats_list[:8]  # Top 8 para gráfico de barras
+                
+                chart_data["category_comparison"] = {
+                    "type": "bar",
+                    "title": "📊 Comparación de Categorías (Top 8)",
+                    "xAxis": {
+                        "title": "Categoría",
+                        "categories": [item['category'] for item in top_for_bar]
+                    },
+                    "yAxis": {
+                        "title": "Valor Promedio"
+                    },
+                    "series": [
+                        {
+                            "name": "Likes Promedio",
+                            "data": [item['avg_likes'] for item in top_for_bar],
+                            "color": "#3498db"
+                        },
+                        {
+                            "name": "Comentarios Promedio",
+                            "data": [item['avg_comments'] for item in top_for_bar],
+                            "color": "#2ecc71"
+                        },
+                        {
+                            "name": "Sentimiento Promedio",
+                            "data": [(item['avg_sentiment'] + 1) / 2 for item in top_for_bar],  # Normalizar a 0-1
+                            "color": "#9b59b6"
+                        }
+                    ]
+                }
+            
+            # 4. Datos para gráfico de burbujas: Cantidad vs Engagement
+            if len(category_stats_list) >= 5:
+                chart_data["category_bubbles"] = {
+                    "type": "bubble",
+                    "title": "🌀 Engagement vs Cantidad por Categoría",
+                    "xAxis": {
+                        "title": "Cantidad de Imágenes",
+                        "min": 0
+                    },
+                    "yAxis": {
+                        "title": "Likes Promedio",
+                        "min": 0
+                    },
+                    "data": [
+                        {
+                            "category": item['category'],
+                            "x": item['image_count'],
+                            "y": item['avg_likes'],
+                            "size": min(item['avg_comments'] * 10, 100),  # Escalar tamaño
+                            "color": item['engagement_score'],
+                            "details": {
+                                "comments_avg": item['avg_comments'],
+                                "shares_avg": item['avg_shares'],
+                                "sentiment": item['avg_sentiment']
+                            }
+                        }
+                        for item in category_stats_list[:20]  # Limitar a 20 categorías
+                    ]
+                }
+            
+            # 5. Datos para gráfico de radar (solo si hay suficientes categorías y métricas)
+            if len(category_stats_list) >= 3:
+                top_for_radar = category_stats_list[:5]  # Top 5 para radar
+                
+                # Normalizar valores para radar (0-1)
+                max_values = {
+                    'image_count': max(item['image_count'] for item in top_for_radar),
+                    'avg_likes': max(item['avg_likes'] for item in top_for_radar),
+                    'avg_comments': max(item['avg_comments'] for item in top_for_radar),
+                    'avg_sentiment': max((item['avg_sentiment'] + 1) / 2 for item in top_for_radar)  # Normalizado
+                }
+                
+                radar_series = []
+                for item in top_for_radar:
+                    radar_series.append({
+                        "category": item['category'],
+                        "values": [
+                            item['image_count'] / max_values['image_count'] if max_values['image_count'] > 0 else 0,
+                            item['avg_likes'] / max_values['avg_likes'] if max_values['avg_likes'] > 0 else 0,
+                            item['avg_comments'] / max_values['avg_comments'] if max_values['avg_comments'] > 0 else 0,
+                            ((item['avg_sentiment'] + 1) / 2) / max_values['avg_sentiment'] if max_values['avg_sentiment'] > 0 else 0
+                        ],
+                        "color": f"hsl({(len(radar_series) * 60) % 360}, 70%, 60%)"  # Colores distintos
+                    })
+                
+                chart_data["category_radar"] = {
+                    "type": "radar",
+                    "title": "📡 Comparación Multidimensional de Categorías",
+                    "dimensions": ["Cantidad", "Likes", "Comentarios", "Sentimiento"],
+                    "series": radar_series
+                }
+            
+            # 6. Datos para gráfico de torta: Distribución porcentual
+            total_images = sum(item['image_count'] for item in category_stats_list)
+            if total_images > 0:
+                pie_data = []
+                colors = ['#3498db', '#2ecc71', '#9b59b6', '#e74c3c', '#f39c12', '#1abc9c', '#34495e', '#d35400']
+                
+                for idx, item in enumerate(category_stats_list[:8]):  # Top 8 para torta
+                    percentage = (item['image_count'] / total_images) * 100
+                    pie_data.append({
+                        "category": item['category'],
+                        "value": item['image_count'],
+                        "percentage": round(percentage, 2),
+                        "color": colors[idx % len(colors)],
+                        "avg_engagement": item['engagement_score']
+                    })
+                
+                # Agrupar el resto como "Otras"
+                other_count = sum(item['image_count'] for item in category_stats_list[8:])
+                if other_count > 0:
+                    other_percentage = (other_count / total_images) * 100
+                    pie_data.append({
+                        "category": "Otras categorías",
+                        "value": other_count,
+                        "percentage": round(other_percentage, 2),
+                        "color": "#95a5a6",
+                        "avg_engagement": 0
+                    })
+                
+                chart_data["category_distribution"] = {
+                    "type": "pie",
+                    "title": "🥧 Distribución de Categorías",
+                    "data": pie_data,
+                    "total_images": total_images
+                }
+            
+            # ====== ESTADÍSTICAS RESUMEN ======
+            summary_stats = {
+                "total_categories": len(category_stats_list),
+                "total_images": total_images,
+                "category_with_most_images": {
+                    "category": category_stats_list[0]['category'] if category_stats_list else "N/A",
+                    "image_count": category_stats_list[0]['image_count'] if category_stats_list else 0,
+                    "percentage": round((category_stats_list[0]['image_count'] / total_images * 100), 2) if category_stats_list else 0
+                },
+                "category_with_best_engagement": {
+                    "category": max(category_stats_list, key=lambda x: x['engagement_score'])['category'] if category_stats_list else "N/A",
+                    "engagement_score": max(category_stats_list, key=lambda x: x['engagement_score'])['engagement_score'] if category_stats_list else 0
+                },
+                "category_with_best_sentiment": {
+                    "category": max(category_stats_list, key=lambda x: x['avg_sentiment'])['category'] if category_stats_list else "N/A",
+                    "sentiment_score": max(category_stats_list, key=lambda x: x['avg_sentiment'])['avg_sentiment'] if category_stats_list else 0
+                }
+            }
+            
+            # Estadísticas de categorías principales
+            if len(category_stats_list) >= 3:
+                top_3_categories = category_stats_list[:3]
+                summary_stats["top_categories"] = [
+                    {
+                        "rank": i + 1,
+                        "category": cat['category'],
+                        "image_count": cat['image_count'],
+                        "percentage": round((cat['image_count'] / total_images) * 100, 2),
+                        "avg_likes": cat['avg_likes'],
+                        "avg_comments": cat['avg_comments']
+                    }
+                    for i, cat in enumerate(top_3_categories)
+                ]
+            
+            # Distribución de imágenes por categoría
+            distribution_stats = []
+            for item in category_stats_list:
+                distribution_stats.append({
+                    "category": item['category'],
+                    "image_count": item['image_count'],
+                    "percentage": round((item['image_count'] / total_images) * 100, 2),
+                    "avg_engagement": item['engagement_score'],
+                    "avg_sentiment": item['avg_sentiment']
+                })
+            
+            return {
+                "success": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                "summary": summary_stats,
+                "charts": chart_data,
+                "detailed_stats": distribution_stats,
+                "metadata": {
+                    "chart_count": len(chart_data),
+                    "available_charts": list(chart_data.keys()),
+                    "categories_analyzed": len(category_stats_list),
+                    "total_images_analyzed": total_images
+                }
+            }
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            return {
+                "success": False,
+                "error": f"Error en análisis de categorías: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+    @staticmethod
+    async def create_tag_analysis():
+        """Análisis de etiquetas y palabras clave - VERSIÓN CORREGIDA"""
+        try:
+            # Obtener la colección de MongoDB desde tu conexión existente
+            # Reemplaza 'coleccion' con cómo obtienes tu colección actualmente
+            # Ejemplo: coleccion = db["nombre_coleccion"]
+            
+            # NOTA: Asegúrate de que 'coleccion' esté disponible en el ámbito actual
+            # Si usas una variable global, agrégala aquí
+            from database import get_db  # Ajusta según tu estructura
+            
+            db = await get_db()
+            coleccion = db["your_collection_name"]  # Reemplaza con tu nombre de colección
+            
+            pipeline = [
+                {
+                    "$match": {
+                        "$or": [
+                            {"tags": {"$exists": True, "$ne": []}},
+                            {"ai_features.auto_tags": {"$exists": True, "$ne": []}}
+                        ]
+                    }
+                },
+                {
+                    "$project": {
+                        "user_tags": "$tags",
+                        "ai_tags": "$ai_features.auto_tags",
+                        "category": 1
+                    }
+                },
+                {"$limit": 300}
+            ]
+            
+            data = await coleccion.aggregate(pipeline).to_list(length=None)
+            
+            if not data:
+                return {
+                    "success": False,
+                    "error": "No hay datos de etiquetas",
+                    "data": None
+                }
+            
+            # Recolectar todas las etiquetas
+            all_user_tags = []
+            all_ai_tags = []
+            
+            for item in data:
+                if isinstance(item.get('user_tags'), list):
+                    all_user_tags.extend([tag.lower() for tag in item['user_tags'] if tag])
+                if isinstance(item.get('ai_tags'), list):
+                    all_ai_tags.extend([tag.lower() for tag in item['ai_tags'] if tag])
+            
+            # Conteo de frecuencia
+            user_tag_freq = Counter(all_user_tags)
+            ai_tag_freq = Counter(all_ai_tags)
+            
+            # Top 20 etiquetas de cada tipo
+            top_user_tags = dict(user_tag_freq.most_common(20))
+            top_ai_tags = dict(ai_tag_freq.most_common(20))
+            
+            # 1. Barras comparativas: User vs AI tags
+            fig1 = go.Figure()
+            
+            fig1.add_trace(go.Bar(
+                x=list(top_user_tags.keys()),
+                y=list(top_user_tags.values()),
+                name='Etiquetas Usuario',
+                marker_color='#3498db'
+            ))
+            
+            fig1.add_trace(go.Bar(
+                x=list(top_ai_tags.keys()),
+                y=list(top_ai_tags.values()),
+                name='Etiquetas IA',
+                marker_color='#e74c3c'
+            ))
+            
+            fig1.update_layout(
+                title="🏷️ Top Etiquetas: Usuario vs IA",
+                xaxis_title="Etiqueta",
+                yaxis_title="Frecuencia",
+                barmode='group',
+                xaxis_tickangle=45
+            )
+            
+            # 2. Word cloud data (para visualización en frontend)
+            wordcloud_data = {
+                "user_tags": [{"text": tag, "value": freq} for tag, freq in user_tag_freq.most_common(50)],
+                "ai_tags": [{"text": tag, "value": freq} for tag, freq in ai_tag_freq.most_common(50)]
+            }
+            
+            # 3. Gráfico de barras horizontales
+            combined_tags = {}
+            for tag in set(list(top_user_tags.keys()) + list(top_ai_tags.keys())):
+                combined_tags[tag] = {
+                    'user': top_user_tags.get(tag, 0),
+                    'ai': top_ai_tags.get(tag, 0)
+                }
+            
+            # Convertir a DataFrame para gráfico
+            tags_df = pd.DataFrame(combined_tags).T.reset_index()
+            tags_df.columns = ['tag', 'user', 'ai']
+            tags_df['total'] = tags_df['user'] + tags_df['ai']
+            tags_df = tags_df.sort_values('total', ascending=True).tail(15)
+            
+            fig3 = go.Figure()
+            
+            fig3.add_trace(go.Bar(
+                y=tags_df['tag'],
+                x=tags_df['user'],
+                name='Usuario',
+                orientation='h',
+                marker_color='#3498db'
+            ))
+            
+            fig3.add_trace(go.Bar(
+                y=tags_df['tag'],
+                x=tags_df['ai'],
+                name='IA',
+                orientation='h',
+                marker_color='#e74c3c'
+            ))
+            
+            fig3.update_layout(
+                title="📋 Top 15 Etiquetas Combinadas",
+                xaxis_title="Frecuencia",
+                yaxis_title="Etiqueta",
+                barmode='stack',
+                height=500
+            )
+            
+            charts = {
+                "tag_comparison": fig1.to_html(full_html=False, include_plotlyjs='cdn'),
+                "horizontal_tags": fig3.to_html(full_html=False, include_plotlyjs='cdn')
+            }
+            
+            return {
+                "success": True,
+                "charts": charts,
+                "wordcloud_data": wordcloud_data,
+                "statistics": {
+                    "total_user_tags": len(user_tag_freq),
+                    "total_ai_tags": len(ai_tag_freq),
+                    "unique_tags_both": len(set(all_user_tags).union(set(all_ai_tags))),
+                    "most_common_user_tag": max(user_tag_freq, key=user_tag_freq.get) if user_tag_freq else None,
+                    "most_common_ai_tag": max(ai_tag_freq, key=ai_tag_freq.get) if ai_tag_freq else None
+                },
+                "metadata": {
+                    "analysis_date": datetime.now().isoformat(),
+                    "document_count": len(data),
+                    "limit_applied": 300
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error en análisis de etiquetas: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+  
+    @staticmethod
+    async def create_performance_radar():
+        """Radar chart comparativo de rendimiento - Retorna JSON"""
+        try:
+            # Obtener métricas de todos los modelos
+            classification = await ModelPerformanceEvaluator.evaluate_image_classification()
+            sentiment = await ModelPerformanceEvaluator.evaluate_sentiment_analysis()
+            objects = await ModelPerformanceEvaluator.evaluate_object_detection()
+            
+            # Extraer scores normalizados (0-1)
+            scores = {}
+            
+            # Clasificación
+            if 'error' not in classification and 'metrics' in classification:
+                scores['classification'] = {
+                    'Precision': classification['metrics'].get('avg_precision', 0),
+                    'Recall': classification['metrics'].get('avg_recall', 0),
+                    'F1 Score': classification['metrics'].get('avg_f1_score', 0)
+                }
+            
+            # Sentimiento
+            if 'error' not in sentiment and 'summary_stats' in sentiment:
+                sentiment_score = (sentiment['summary_stats'].get('mean_sentiment', 0) + 1) / 2
+                scores['sentiment'] = {
+                    'Precisión': sentiment_score,
+                    'Correlación': min(abs(sentiment.get('correlation_metrics', {}).get('sentiment_likes_correlation', 0)), 1),
+                    'Estabilidad': 1 - min(sentiment['summary_stats'].get('std_sentiment', 1), 1)
+                }
+            
+            # Detección de objetos
+            if 'error' not in objects and 'object_statistics' in objects:
+                obj_score = min(objects['object_statistics'].get('avg_objects_per_image', 0) / 5, 1)
+                scores['object_detection'] = {
+                    'Cobertura': obj_score,
+                    'Diversidad': min(objects['object_statistics'].get('total_unique_objects', 0) / 50, 1),
+                    'Precisión': objects['object_statistics'].get('avg_confidence', 0.7)  # Usar confianza real
+                }
+            
+            if not scores:
+                return {
+                    "success": False,
+                    "error": "No hay métricas para radar chart",
+                    "data": None
+                }
+            
+            # Definir métricas comunes para comparación
+            all_metrics = ['Precisión', 'Recall', 'F1 Score', 'Cobertura', 'Diversidad', 'Correlación', 'Estabilidad']
+            
+            # Preparar datos para radar chart (formato JSON)
+            radar_data = {
+                "labels": ['Precisión', 'Recall', 'F1 Score', 'Cobertura', 'Diversidad'],
+                "datasets": []
+            }
+            
+            # Colores para cada modelo
+            model_colors = {
+                'classification': 'rgba(54, 162, 235, 0.6)',
+                'sentiment': 'rgba(255, 99, 132, 0.6)',
+                'object_detection': 'rgba(75, 192, 192, 0.6)'
+            }
+            
+            model_names = {
+                'classification': 'Clasificación de Imágenes',
+                'sentiment': 'Análisis de Sentimiento',
+                'object_detection': 'Detección de Objetos'
+            }
+            
+            # Construir datasets para cada modelo
+            for model_key, model_scores in scores.items():
+                # Mapear las métricas del modelo a las métricas del radar
+                values = []
+                for radar_metric in radar_data["labels"]:
+                    # Buscar la métrica correspondiente (con diferentes nombres posibles)
+                    metric_value = 0
+                    for score_key, score_value in model_scores.items():
+                        if radar_metric.lower() in score_key.lower() or score_key.lower() in radar_metric.lower():
+                            metric_value = score_value
+                            break
+                    values.append(round(metric_value, 3))
+                
+                radar_data["datasets"].append({
+                    "label": model_names.get(model_key, model_key.replace('_', ' ').title()),
+                    "data": values,
+                    "backgroundColor": model_colors.get(model_key, 'rgba(199, 199, 199, 0.6)'),
+                    "borderColor": model_colors.get(model_key, 'rgba(199, 199, 199, 1)'),
+                    "borderWidth": 2,
+                    "pointBackgroundColor": model_colors.get(model_key, 'rgba(199, 199, 199, 1)')
+                })
+            
+            # Calcular estadísticas comparativas
+            comparison_stats = {
+                "model_count": len(scores),
+                "average_scores": {},
+                "best_model_per_metric": {},
+                "overall_rankings": []
+            }
+            
+            # Calcular promedios por métrica
+            for radar_metric in radar_data["labels"]:
+                metric_values = []
+                for dataset in radar_data["datasets"]:
+                    idx = radar_data["labels"].index(radar_metric)
+                    metric_values.append(dataset["data"][idx])
+                
+                if metric_values:
+                    comparison_stats["average_scores"][radar_metric] = round(sum(metric_values) / len(metric_values), 3)
+                    
+                    # Encontrar el mejor modelo para esta métrica
+                    best_idx = metric_values.index(max(metric_values))
+                    comparison_stats["best_model_per_metric"][radar_metric] = {
+                        "model": radar_data["datasets"][best_idx]["label"],
+                        "score": max(metric_values)
+                    }
+            
+            # Calificar cada modelo (puntuación global)
+            for dataset in radar_data["datasets"]:
+                avg_score = round(sum(dataset["data"]) / len(dataset["data"]), 3)
+                
+                # Determinar categoría basada en puntuación
+                if avg_score >= 0.8:
+                    category = "Excelente"
+                elif avg_score >= 0.6:
+                    category = "Bueno"
+                elif avg_score >= 0.4:
+                    category = "Aceptable"
+                else:
+                    category = "Necesita Mejora"
+                
+                comparison_stats["overall_rankings"].append({
+                    "model": dataset["label"],
+                    "average_score": avg_score,
+                    "category": category,
+                    "strengths": [],
+                    "weaknesses": []
+                })
+                
+                # Identificar fortalezas y debilidades
+                for i, metric in enumerate(radar_data["labels"]):
+                    score = dataset["data"][i]
+                    if score >= 0.7:
+                        comparison_stats["overall_rankings"][-1]["strengths"].append(f"{metric}: {score}")
+                    elif score <= 0.3:
+                        comparison_stats["overall_rankings"][-1]["weaknesses"].append(f"{metric}: {score}")
+            
+            # Ordenar modelos por puntuación
+            comparison_stats["overall_rankings"].sort(key=lambda x: x["average_score"], reverse=True)
+            
+            # Datos crudos para análisis adicional
+            raw_metrics = {
+                "classification_metrics": classification if 'error' not in classification else {},
+                "sentiment_metrics": sentiment if 'error' not in sentiment else {},
+                "object_detection_metrics": objects if 'error' not in objects else {},
+                "normalized_scores": scores
+            }
+            
+            # Recomendaciones basadas en el análisis
+            recommendations = []
+            if comparison_stats["overall_rankings"]:
+                best_model = comparison_stats["overall_rankings"][0]
+                worst_model = comparison_stats["overall_rankings"][-1]
+                
+                recommendations.append({
+                    "type": "fortaleza",
+                    "message": f"El modelo {best_model['model']} tiene el mejor rendimiento general ({best_model['average_score']})"
+                })
+                
+                recommendations.append({
+                    "type": "mejora",
+                    "message": f"El modelo {worst_model['model']} necesita atención, especialmente en: {', '.join(worst_model['weaknesses'][:2]) if worst_model['weaknesses'] else 'todas las métricas'}"
+                })
+                
+                # Identificar métricas que necesitan mejora general
+                for metric, avg in comparison_stats["average_scores"].items():
+                    if avg < 0.5:
+                        recommendations.append({
+                            "type": "alerta",
+                            "message": f"La métrica '{metric}' tiene un promedio bajo ({avg}) en todos los modelos"
+                        })
+            
+            return {
+                "success": True,
+                "radar_chart_data": radar_data,
+                "comparison_statistics": comparison_stats,
+                "recommendations": recommendations,
+                "raw_metrics": raw_metrics,
+                "metadata": {
+                    "analysis_timestamp": datetime.now().isoformat(),
+                    "models_evaluated": list(scores.keys()),
+                    "metrics_used": radar_data["labels"],
+                    "normalization_range": "0-1"
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error creando radar chart: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+
+
 
 # ============ ENDPOINTS DE MÉTRICAS ============
 
@@ -667,7 +2137,7 @@ async def export_performance_report():
     try:
         summary = await get_performance_summary()
         
-        # Crear reporte en formato markdown
+        # Reporte en formato markdown
         report = f"""
 # 📊 Reporte de Rendimiento - Sistema IA
 **Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -779,14 +2249,6 @@ async def health_check():
                 "sentiment": has_sentiment,
                 "object_detection": has_objects
             },
-            "endpoints": {
-                "classification": "/api/metrics/classification",
-                "sentiment": "/api/metrics/sentiment",
-                "object_detection": "/api/metrics/object-detection",
-                "summary": "/api/metrics/summary",
-                "benchmarks": "/api/metrics/benchmarks",
-                "export": "/api/metrics/export/report"
-            }
         }
     except Exception as e:
         return {
@@ -803,3 +2265,81 @@ async def test_endpoint():
         "message": "Sistema de métricas funcionando correctamente",
         "timestamp": datetime.utcnow().isoformat()
     }
+    
+    
+
+@metrics_router.get("/engagement")
+async def get_engagement_metrics():
+    """Métricas de engagement de las imágenes"""
+    try:
+        return await ModelPerformanceEvaluator.create_engagement_analysis()
+    except Exception as e:
+        raise HTTPException(500, f"Error en engagement: {str(e)}")
+
+@metrics_router.get("/temporal")
+async def get_temporal_metrics():
+    """Análisis temporal de las imágenes"""
+    try:
+        return await ModelPerformanceEvaluator.create_temporal_analysis()
+    except Exception as e:
+        raise HTTPException(500, f"Error en análisis temporal: {str(e)}")
+
+@metrics_router.get("/categories")
+async def get_category_metrics():
+    """Análisis detallado por categorías"""
+    try:
+        return await ModelPerformanceEvaluator.create_category_analysis()
+    except Exception as e:
+        raise HTTPException(500, f"Error en análisis de categorías: {str(e)}")
+
+@metrics_router.get("/tags")
+async def get_tag_metrics():
+    """Análisis de etiquetas y palabras clave"""
+    try:
+        return await ModelPerformanceEvaluator.create_tag_analysis()
+    except Exception as e:
+        raise HTTPException(500, f"Error en análisis de etiquetas: {str(e)}")
+
+@metrics_router.get("/performance-radar")
+async def get_performance_radar():
+    """Radar chart comparativo de rendimiento"""
+    try:
+        return await ModelPerformanceEvaluator.create_performance_radar()
+    except Exception as e:
+        raise HTTPException(500, f"Error en radar chart: {str(e)}")
+
+@metrics_router.get("/all-charts")
+async def get_all_charts():
+    """Obtiene todas las gráficas disponibles"""
+    try:
+        results = await asyncio.gather(
+            ModelPerformanceEvaluator.create_engagement_analysis(),
+            ModelPerformanceEvaluator.create_temporal_analysis(),
+            ModelPerformanceEvaluator.create_category_analysis(),
+            ModelPerformanceEvaluator.create_tag_analysis(),
+            ModelPerformanceEvaluator.create_performance_radar(),
+            return_exceptions=True
+        )
+        
+        charts = {
+            "engagement": results[0] if not isinstance(results[0], Exception) else {"error": str(results[0])},
+            "temporal": results[1] if not isinstance(results[1], Exception) else {"error": str(results[1])},
+            "categories": results[2] if not isinstance(results[2], Exception) else {"error": str(results[2])},
+            "tags": results[3] if not isinstance(results[3], Exception) else {"error": str(results[3])},
+            "performance_radar": results[4] if not isinstance(results[4], Exception) else {"error": str(results[4])}
+        }
+        
+        # Contar gráficas exitosas
+        successful = sum(1 for v in charts.values() if 'error' not in v)
+        
+        return {
+            "charts": charts,
+            "summary": {
+                "total_charts": len(charts),
+                "successful_charts": successful,
+                "failed_charts": len(charts) - successful
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Error obteniendo todas las gráficas: {str(e)}")

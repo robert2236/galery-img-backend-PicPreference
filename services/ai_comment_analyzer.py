@@ -12,7 +12,16 @@ class CommentAIAnalyzer:
         )
         
         # Extractor de palabras clave (simplificado)
-        self.stop_words = {"el", "la", "los", "las", "un", "una", "de", "en", "y", "que"}
+        self.stop_words = {
+            # Español
+            "el", "la", "los", "las", "un", "una", "de", "en", "y", "que",
+            # Inglés
+            "the", "and", "a", "an", "of", "in", "to", "for", "with", "on",
+            # Francés
+            "le", "la", "les", "un", "une", "de", "et", "en", "que",
+            # Italiano
+            "il", "la", "i", "le", "un", "una", "di", "e", "in", "che"
+        }
     
     def analyze_comments(self, comments_list):
         """Analiza una lista de comentarios de una imagen"""
