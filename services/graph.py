@@ -68,9 +68,14 @@ class InteractionGraph:
             
             # Encontrar usuarios similares (que hayan likeado las mismas imágenes)
             similar_users = []
-            for neighbor in self.graph.neighbors(user_node):
-                if isinstance(neighbor, str) and neighbor.startswith("user_"):
-                    similar_users.append(neighbor)
+            for image_node in user_neighbors:
+                if isinstance(image_node, str) and image_node.startswith("image_"):
+                    # Otros usuarios que likearon esta misma imagen
+                    for other_user in self.graph.neighbors(image_node):
+                        if isinstance(other_user, str) and other_user.startswith("user_") and other_user != user_node:
+                            similar_users.append(other_user)
+            
+            similar_users = list(set(similar_users))  # Eliminar duplicados
             
             print(f"👥 Usuarios similares encontrados: {len(similar_users)} - {similar_users}")
             
@@ -81,47 +86,40 @@ class InteractionGraph:
                     print(f"   Vecino: {neighbor} (tipo: {type(neighbor)})")
                 return []
             
-            # Obtener imágenes que el usuario YA ha likeado
+            # Obtener imágenes que el usuario YA ha likeado (usando el grafo en lugar de la BD)
+            # Esto es crucial para la evaluación, donde el grafo solo contiene datos de entrenamiento
             user_liked_images = set()
-            liked_images_cursor = coleccion.find({"liked_by": user_id})
-            liked_images = await liked_images_cursor.to_list(length=100)
-            
-            for image in liked_images:
-                user_liked_images.add(str(image["image_id"]))
+            for neighbor in self.graph.neighbors(user_node):
+                if isinstance(neighbor, str) and neighbor.startswith("image_"):
+                    image_id = neighbor.replace("image_", "")
+                    user_liked_images.add(str(image_id))
             
             print(f"❤️  Imágenes likeadas por usuario {user_id}: {list(user_liked_images)}")
             
             # Recomendar imágenes de usuarios similares
-            recommendations = []
+            recommendations = {}
             for sim_user in similar_users:
                 print(f"🔍 Revisando usuario similar: {sim_user}")
                 sim_user_neighbors = list(self.graph.neighbors(sim_user))
                 print(f"   📷 Imágenes likeadas por {sim_user}: {sim_user_neighbors}")
                 
-                for image_node in self.graph.neighbors(sim_user):
+                for image_node in sim_user_neighbors:
                     if isinstance(image_node, str) and image_node.startswith("image_"):
                         image_id = image_node.replace("image_", "")
                         
                         # Verificar si el usuario YA likeó esta imagen
                         if image_id not in user_liked_images:
                             score = self.graph[sim_user][image_node].get("weight", 1)
-                            recommendations.append((image_id, score))
-                            print(f"   ✅ Recomendación añadida: {image_id} (score: {score})")
+                            if image_id not in recommendations:
+                                recommendations[image_id] = 0
+                            recommendations[image_id] += score
+                            print(f"   ✅ Recomendación añadida/actualizada: {image_id} (score acumulado: {recommendations[image_id]})")
             
             print(f"📋 Total de recomendaciones encontradas: {len(recommendations)}")
             print(f"📝 Lista de recomendaciones: {recommendations}")
             
-            # Ordenar por score y eliminar duplicados
-            unique_recommendations = []
-            seen_ids = set()
-            
-            for img_id, score in recommendations:
-                if img_id not in seen_ids:
-                    seen_ids.add(img_id)
-                    unique_recommendations.append((img_id, score))
-            
             # Ordenar por score (mayor primero) y tomar top k
-            result = sorted(unique_recommendations, key=lambda x: x[1], reverse=True)[:k]
+            result = sorted(recommendations.items(), key=lambda x: x[1], reverse=True)[:k]
             print(f"🎯 {len(result)} recomendaciones finales para usuario {user_id}: {result}")
             
             return result
@@ -155,7 +153,7 @@ class InteractionGraph:
             print(f"❌ Error agregando likes de prueba: {e}")
             import traceback
             traceback.print_exc()
-    async def get_fallback_recommendations(user_id: str, limit: int):
+    async def get_fallback_recommendations(self, user_id: str, limit: int):
         """Recomendaciones de fallback cuando el grafo no tiene datos"""
         try:
             # Obtener imágenes populares como fallback

@@ -174,8 +174,12 @@ async def log_interaction(image_id: str, action: str = "view", user_id: Optional
         if not image_exists:
             raise HTTPException(404, "Imagen no encontrada")
         
-        # Registrar la interacción
-        await visual_recommender.log_interaction(image_id, action)
+        # Registrar la interacción directamente en la base de datos
+        update_field = f"interactions.{action}s"
+        await coleccion.update_one(
+            {"_id": ObjectId(image_id)},
+            {"$inc": {update_field: 1}}
+        )
         
         # Si hay usuario, actualizar el grafo (esto necesita implementación)
         if user_id:

@@ -1,0 +1,5 @@
+# PyTorch / Torchvision - builds CUDA (cu118) para GPUs NVIDIA
+# Uso en Docker:
+#   pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 -r requirements-gpu.txt
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118

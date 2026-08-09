@@ -1,6 +1,5 @@
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
-from decouple import config
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from routers.users import users
 from routers.galery import galery
@@ -40,7 +39,6 @@ graph_recommender = InteractionGraph()
 # Instancias globales
 graph_recommender = InteractionGraph()
 visual_recommender = VisualRecommender()
-recommender = VisualRecommender()
 
 
 
@@ -48,7 +46,7 @@ async def rebuild_graph_periodically():
     """Reconstruye el grafo periódicamente (ejecutar en background)"""
     while True:
         try:
-            print("🔄 Reconstruyendo grafo de interacciones (tarea programada)...")
+            print("[REBUILD] Reconstruyendo grafo de interacciones (tarea programada)...")
             graph_recommender.graph.clear()  # Limpiar grafo existente
             
             # Obtener todas las imágenes con likes
@@ -56,7 +54,7 @@ async def rebuild_graph_periodically():
                 "liked_by": {"$exists": True, "$ne": []}
             }).to_list(None)
             
-            print(f"📊 Procesando {len(images_with_likes)} imágenes con likes...")
+            print(f"[DATA] Procesando {len(images_with_likes)} imágenes con likes...")
             
             # PRIMERO: Añadir todos los nodos de usuario e imagen
             all_user_ids = set()
@@ -115,30 +113,30 @@ async def rebuild_graph_periodically():
 async def lifespan(app: FastAPI):
     """Manejo del ciclo de vida de la aplicación"""
     # Startup
-    print("🔄 Inicializando sistemas de recomendación...")
+    print("[STARTUP] Inicializando sistemas de recomendación...")
     
     try:
         # Construir grafo de interacciones
-        print("📊 Construyendo grafo de interacciones...")
+        print("[GRAPH] Construyendo grafo de interacciones...")
         await graph_recommender.build_from_db()
-        print(f"✅ Grafo de interacciones: {graph_recommender.graph.number_of_nodes()} nodos, {graph_recommender.graph.number_of_edges()} aristas")
+        print(f"[OK] Grafo de interacciones: {graph_recommender.graph.number_of_nodes()} nodos, {graph_recommender.graph.number_of_edges()} aristas")
         
         # Construir índice visual
-        print("📊 Construyendo índice visual...")
+        print("[INDEX] Construyendo índice visual...")
         await visual_recommender.build_index()
-        print(f"✅ Índice visual: {len(visual_recommender.image_ids) if visual_recommender.image_ids else 0} imágenes indexadas")
+        print(f"[OK] Índice visual: {len(visual_recommender.image_ids) if visual_recommender.image_ids else 0} imágenes indexadas")
         
         # Iniciar tarea de reconstrucción periódica en background
         asyncio.create_task(rebuild_graph_periodically())
-        print("✅ Tarea de reconstrucción periódica iniciada")
+        print("[OK] Tarea de reconstrucción periódica iniciada")
         
     except Exception as e:
-        print(f"❌ Error inicializando sistemas de recomendación: {e}")
+        print(f"[ERROR] Error inicializando sistemas de recomendación: {e}")
     
     yield
     
     # Shutdown (opcional)
-    print("🔴 Apagando aplicación...")
+    print("[SHUTDOWN] Apagando aplicación...")
 
 app = FastAPI(
     title="Sistema de Recomendación de Galería",
@@ -150,19 +148,13 @@ app = FastAPI(
 security = HTTPBasic()
 
 # Configuración de CORS
-origins = [
-    "https://5j6k3nm7-5173.use2.devtunnels.ms",
-    "https://5j6k3nm7-5000.use2.devtunnels.ms", 
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://localhost:8000",
-    "http://192.168.1.103:5173"
-]
-
+# Acceso permitido desde cualquier origen (cualquier IP/puerto).
+# allow_credentials=False porque el wildcard '*' es incompatible con el envío de
+# cookies en el navegador; la autenticación de la app usa JWT Bearer (Authorization).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"]
@@ -179,9 +171,9 @@ app.include_router(metrics_router)
 async def startup_event():
     """Inicializar el sistema al arrancar"""
     try:
-        print("🚀 Inicializando sistema de recomendación...")
+        print("[STARTUP] Inicializando sistema de recomendación...")
         await recommendation_engine.initialize()
-        print("✅ Sistema de recomendación listo")
+        print("[OK] Sistema de recomendación listo")
     except Exception as e:
         print(f"❌ Error inicializando sistema: {e}")
 
@@ -280,7 +272,7 @@ async def get_image_based_recommendations(user_id: int, image_id: str):
         if not target_image:
             raise HTTPException(status_code=404, detail="Imagen no encontrada")
 
-        similar_images_ids = await recommender.find_similar(image_id, k=10)
+        similar_images_ids = await visual_recommender.find_similar(image_id, k=10)
         
         # Obtener información completa de las imágenes similares
         similar_images = []
@@ -330,17 +322,17 @@ async def get_user_based_recommendations(user_id: int):
         # 2. Estrategia basada en el número de interacciones
         if len(user_viewed_images) == 0:
             # Usuario sin interacciones - Recomendaciones populares
-            print("🎯 Estrategia: Cold Start (populares)")
+            print("[STRATEGY] Cold Start (populares)")
             return await get_cold_start_recommendations(user_id)
             
         elif len(user_viewed_images) < 5:
             # Usuario con pocas interacciones - Combinar contenido + populares
-            print("🎯 Estrategia: Poco historial (híbrido)")
+            print("[STRATEGY] Poco historial (híbrido)")
             return await get_hybrid_recommendations(user_id, user_viewed_images)
             
         else:
             # Usuario con buen historial - Recomendaciones personalizadas
-            print("🎯 Estrategia: Historial completo (personalizado)")
+            print("[STRATEGY] Historial completo (personalizado)")
             return await get_personalized_recommendations(user_id, user_viewed_images)
         
     except Exception as e:

@@ -21,8 +21,7 @@ class VisualRecommender:
             
             # Obtener todas las imágenes con características
             images = await coleccion.find({
-                "features": {"$exists": True},
-                "features": {"$ne": None}
+                "features": {"$exists": True, "$ne": None}
             }).to_list(None)
             
             if not images:

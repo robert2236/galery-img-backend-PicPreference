@@ -1,0 +1,48 @@
+# Git / CI
+.git
+.gitignore
+
+# Secretos y entorno local
+.env
+.env.*
+venv
+.venv
+env
+
+# Node (ajeno al backend, ~24MB)
+node_modules
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.log
+
+# Editor / tooling
+.vscode
+.opencode
+.opencode.json
+.idea
+
+# Scripts de desarrollo (pkl + credenciales de test)
+scritps
+
+# Datos de usuario en runtime (se crea vacio en la imagen)
+uploads
+
+# Documentacion y Docker
+README.md
+Dockerfile
+.dockerignore
+
+# Artefactos
+*.pkl
+*.h5
+Thumbs.db
+.DS_Store
+
+# Dump manual de MongoDB (mongodump/mongorestore)
+backup/

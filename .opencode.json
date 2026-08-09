@@ -1,0 +1,14 @@
+{
+  "project": {
+    "name": "picpreference-gallery",
+    "version": "1.0.0"
+  },
+  "agent": {
+    "skills_directory": "./.opencode/skills",
+    "autoload_skills": true,
+    "permissions": {
+      "filesystem": "read_write",
+      "terminal": "execute_local"
+    }
+  }
+}

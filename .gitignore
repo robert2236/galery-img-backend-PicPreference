@@ -18,4 +18,7 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Dump manual de MongoDB (mongodump/mongorestore)
+backup/
+
 # Archivos y carpetas específicos de FastAPI

@@ -22,14 +22,19 @@ class RecommenderEvaluator:
                     
                 # Obtener usuarios que dieron like (de las interacciones)
                 likes = []
-                interactions_data = image.get("interactions", {})
                 
-                # Si tienes un campo específico para likes
-                if "likes" in interactions_data and isinstance(interactions_data["likes"], list):
-                    likes = interactions_data["likes"]
-                # O si tienes un campo liked_by
-                elif "liked_by" in interactions_data and isinstance(interactions_data["liked_by"], list):
-                    likes = interactions_data["liked_by"]
+                # Priorizar liked_by en la raíz del documento (nuevo esquema)
+                if "liked_by" in image and isinstance(image["liked_by"], list) and image["liked_by"]:
+                    likes = image["liked_by"]
+                else:
+                    interactions_data = image.get("interactions", {})
+                    
+                    # Si tienes un campo específico para likes en interactions
+                    if "likes" in interactions_data and isinstance(interactions_data["likes"], list):
+                        likes = interactions_data["likes"]
+                    # O si tienes un campo liked_by en interactions
+                    elif "liked_by" in interactions_data and isinstance(interactions_data["liked_by"], list):
+                        likes = interactions_data["liked_by"]
                 
                 if likes:
                     interactions.append({
@@ -121,7 +126,7 @@ class RecommenderEvaluator:
                 return None
             
             # Obtener recomendaciones
-            recommendations = graph_recommender.recommend_for_user(user_id, k=self.k)
+            recommendations = await graph_recommender.recommend_for_user(user_id, k=self.k)
             rec_ids = [int(img_id) for img_id, score in recommendations] if recommendations else []
             
             # Evaluar
@@ -244,14 +249,20 @@ class RecommenderEvaluator:
                 print(f"❌ Usuario {user_id} no encontrado")
                 return None
             
-            # Obtener los likes del usuario - depende de tu estructura de datos
-            true_positives = []
-            if "liked_images" in user_data:
-                true_positives = user_data.get("liked_images", [])
-            elif "interactions" in user_data:
-                # Si los likes están en interactions
-                interactions = user_data.get("interactions", {})
-                true_positives = interactions.get("likes", [])
+            # Obtener los likes del usuario - buscando en la colección de imágenes (esquema correcto)
+            liked_images_cursor = coleccion.find({"liked_by": user_id})
+            liked_images_docs = await liked_images_cursor.to_list(length=None)
+            
+            true_positives = [img["image_id"] for img in liked_images_docs if "image_id" in img]
+            
+            # Fallback por si la estructura antigua todavía se usa
+            if not true_positives:
+                if "liked_images" in user_data:
+                    true_positives = user_data.get("liked_images", [])
+                elif "interactions" in user_data:
+                    # Si los likes están en interactions
+                    interactions = user_data.get("interactions", {})
+                    true_positives = interactions.get("likes", [])
             
             print(f"📊 Usuario {user_id} tiene {len(true_positives)} likes")
             

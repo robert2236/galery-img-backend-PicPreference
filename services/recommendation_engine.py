@@ -60,7 +60,7 @@ class RecommendationEngine:
             
             final_recommendations = [
                 rec for rec in unique_recommendations 
-                if rec['id'] not in viewed_images
+                if rec.get('image_id', 0) not in viewed_images
             ][:limit]
             
             print(f"✅ Recomendaciones finales: {len(final_recommendations)}")
