@@ -1,11 +1,13 @@
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.staticfiles import StaticFiles
 from routers.users import users
 from routers.galery import galery
 from routers.category import category
 from routers.recommendations import router as recommendations_router
 from routers.dashboard import metrics_router
+from routers.vector_search import router as vector_search_router
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from contextlib import asynccontextmanager
 from services.genetic import optimize_weights
@@ -121,12 +123,25 @@ async def lifespan(app: FastAPI):
         await graph_recommender.build_from_db()
         print(f"[OK] Grafo de interacciones: {graph_recommender.graph.number_of_nodes()} nodos, {graph_recommender.graph.number_of_edges()} aristas")
         
-        # Construir índice visual
-        print("[INDEX] Construyendo índice visual...")
+        # Construir indice visual
+        print("[INDEX] Construyendo indice visual...")
         await visual_recommender.build_index()
-        print(f"[OK] Índice visual: {len(visual_recommender.image_ids) if visual_recommender.image_ids else 0} imágenes indexadas")
+        print(f"[OK] Indice visual: {len(visual_recommender.image_ids) if visual_recommender.image_ids else 0} imagenes indexadas")
         
-        # Iniciar tarea de reconstrucción periódica en background
+        # Auto-migrar embeddings a ChromaDB
+        print("[VECTOR] Inicializando ChromaDB y migrando embeddings...")
+        try:
+            from vector_store import get_vector_store
+            from migrate_vectors import VectorMigrator
+            migrator = VectorMigrator()
+            migrator.run_migration(dry_run=False, incremental=True)
+            vector_store = get_vector_store()
+            total_embeddings = vector_store.collection.count()
+            print(f"[OK] ChromaDB: {total_embeddings} embeddings disponibles")
+        except Exception as e:
+            print(f"[WARNING] ChromaDB no disponible: {e}")
+        
+        # Iniciar tarea de reconstruccion periodica en background
         asyncio.create_task(rebuild_graph_periodically())
         print("[OK] Tarea de reconstrucción periódica iniciada")
         
@@ -166,6 +181,14 @@ app.include_router(galery)
 app.include_router(category)
 app.include_router(recommendations_router)
 app.include_router(metrics_router)
+app.include_router(vector_search_router)
+
+# Mount static directories for serving uploaded files and static assets
+import os
+os.makedirs("uploads", exist_ok=True)
+os.makedirs("static", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.on_event("startup")
 async def startup_event():

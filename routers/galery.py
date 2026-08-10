@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends,status, BackgroundTasks
 from database.galery import (get_all_images,create_image, get_one_image,delete_image)
-from models.galery import Image,UpdateImage,ImageResponse,InteractionUpdate, CommentCreate
+from models.galery import Image,UpdateImage,ImageResponse,InteractionUpdate, CommentCreate, QualificationResponse
 from models.users import User
 from database.databases import user,coleccion
 from utils.auth.oauth import get_current_user
@@ -29,7 +29,7 @@ try:
     from services.ai_comment_analyzer import CommentAIAnalyzer
 except ImportError:
     ai_processor = None
-    print("⚠️ Advertencia: Módulos de IA no disponibles")
+    print("[WARNING] Modulos de IA no disponibles")
 
 feature_extractor = FeatureExtractor()
 
@@ -98,6 +98,20 @@ async def save_base64_image(base64_str: str) -> tuple:
         
     except Exception as e:
         raise ValueError(f"Error procesando base64: {str(e)}")
+
+def calculate_qualification(likes: int, views: int) -> int:
+    if views == 0:
+        return 1
+    ratio = likes / views
+    if ratio >= 0.5:
+        return 5
+    elif ratio >= 0.4:
+        return 4
+    elif ratio >= 0.3:
+        return 3
+    elif ratio >= 0.2:
+        return 2
+    return 1
 
 async def process_image_ai_background(image_id: str, image_path: str):
     """
@@ -607,7 +621,33 @@ async def search_images(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en búsqueda: {str(e)}")
-    
+
+@galery.get('/api/images/{image_id}/qualification', response_model=QualificationResponse)
+async def get_image_qualification(image_id: int):
+    image = await coleccion.find_one({"image_id": image_id})
+    if not image:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+
+    interactions = image.get("interactions", {})
+    likes = interactions.get("likes", 0)
+    views = interactions.get("views", 0)
+
+    ratio = likes / views if views > 0 else 0.0
+    qualification = calculate_qualification(likes, views)
+
+    await coleccion.update_one(
+        {"image_id": image_id},
+        {"$set": {"qualification": qualification}}
+    )
+
+    return QualificationResponse(
+        image_id=image_id,
+        qualification=qualification,
+        likes=likes,
+        views=views,
+        ratio=round(ratio, 4)
+    )
+
 """ @galery.post('/api/create_image', response_model=Image)
 async def save_image(img: Image):
     # 1. Verificar si el usuario existe
@@ -759,7 +799,18 @@ async def update_interactions(
     print("Lista actual de imágenes:", user_data)
             
 
-    # 7. Devolver la imagen actualizada
+    # 7. Calcular y guardar calificación
+    updated_image = await coleccion.find_one({"image_id": image_id})
+    interactions = updated_image.get("interactions", {})
+    likes = interactions.get("likes", 0)
+    views = interactions.get("views", 0)
+    qualification = calculate_qualification(likes, views)
+    await coleccion.update_one(
+        {"image_id": image_id},
+        {"$set": {"qualification": qualification}}
+    )
+
+    # 8. Devolver la imagen actualizada
     updated_image = await coleccion.find_one({"image_id": image_id})
     return Image(**updated_image)
 
@@ -793,7 +844,9 @@ async def add_comment(
     # Estructura del comentario
     new_comment = {
         "comment_id": int(comment_id),
-        "user_id": user_id,
+        "user_id": usuario["user_id"],
+        "username": user_id,
+        "user_image": usuario.get("image", ""),
         "comment": comment_data.comment,
         "created_at": datetime.utcnow(),
         "parent_comment_id": comment_data.parent_comment_id,
@@ -908,10 +961,173 @@ async def remove_like(
     if update_result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Imagen no encontrada")
     
-    
+    # Recalcular calificación después de remover like
+    updated_image = await coleccion.find_one({"image_id": image_id})
+    interactions = updated_image.get("interactions", {})
+    likes = interactions.get("likes", 0)
+    views = interactions.get("views", 0)
+    qualification = calculate_qualification(likes, views)
+    await coleccion.update_one(
+        {"image_id": image_id},
+        {"$set": {"qualification": qualification}}
+    )
+
     # Devolver la imagen actualizada
     updated_image = await coleccion.find_one({"image_id": image_id})
     return Image(**updated_image)
 
 
+# ============ SAVED IMAGES ENDPOINTS ============
 
+@galery.put("/api/images/{image_id}/save")
+async def save_image_to_profile(
+    image_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Save an image to the user's profile collection"""
+    # Verify image exists
+    image = await coleccion.find_one({"image_id": image_id})
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Get user_id from current_user
+    user_id = current_user.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found")
+    
+    # Check if already saved
+    saved_images = current_user.get("saved_images", [])
+    if image_id in saved_images:
+        raise HTTPException(status_code=400, detail="Image already saved")
+    
+    # Add to saved_images
+    await user.update_one(
+        {"user_id": user_id},
+        {"$addToSet": {"saved_images": image_id}}
+    )
+    
+    return {"res": "Image saved to profile", "image_id": image_id}
+
+
+@galery.delete("/api/images/{image_id}/save")
+async def unsave_image_from_profile(
+    image_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Remove an image from the user's profile collection"""
+    user_id = current_user.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found")
+    
+    # Check if image is saved
+    saved_images = current_user.get("saved_images", [])
+    if image_id not in saved_images:
+        raise HTTPException(status_code=400, detail="Image not saved")
+    
+    # Remove from saved_images
+    await user.update_one(
+        {"user_id": user_id},
+        {"$pull": {"saved_images": image_id}}
+    )
+    
+    return {"res": "Image removed from profile", "image_id": image_id}
+
+
+@galery.get("/api/users/{user_id}/saved-images")
+async def get_user_saved_images(
+    user_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get all saved images for a user.
+    - If viewing own gallery: always allowed
+    - If viewing another user's gallery: only if profile is public
+    """
+    # Find the target user
+    target_user = await user.find_one({"user_id": user_id})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if the requesting user is the owner
+    is_owner = current_user.get("user_id") == user_id
+    
+    # If not the owner, check if profile is public
+    if not is_owner and not target_user.get("profile_public", True):
+        raise HTTPException(status_code=403, detail="This profile is private")
+    
+    # Get user's saved_images list
+    saved_image_ids = target_user.get("saved_images", [])
+    
+    if not saved_image_ids:
+        return {"user_id": user_id, "saved_images": [], "count": 0}
+    
+    # Fetch all saved images from database
+    saved_images = []
+    for img_id in saved_image_ids:
+        image = await coleccion.find_one({"image_id": img_id})
+        if image:
+            # Convert ObjectId to string
+            if "_id" in image:
+                image["_id"] = str(image["_id"])
+            # Convert liked_by to strings
+            if "liked_by" in image and image["liked_by"]:
+                image["liked_by"] = [str(uid) for uid in image["liked_by"]]
+            saved_images.append(image)
+    
+    return {
+        "user_id": user_id,
+        "saved_images": saved_images,
+        "count": len(saved_images)
+    }
+
+
+@galery.get("/api/users/{user_id}/saved-images/public")
+async def get_user_saved_images_public(user_id: str):
+    """
+    Get saved images for a public profile (no authentication required).
+    Accepts either numeric user_id or username string.
+    Only works if the user's profile is public.
+    """
+    # Try to find by numeric user_id first
+    target_user = None
+    try:
+        numeric_id = int(user_id)
+        target_user = await user.find_one({"user_id": numeric_id})
+    except (ValueError, TypeError):
+        pass
+    
+    # If not found by numeric id, try by username
+    if not target_user:
+        target_user = await user.find_one({"username": user_id})
+    
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if profile is public
+    if not target_user.get("profile_public", True):
+        raise HTTPException(status_code=403, detail="This profile is private")
+    
+    # Get user's saved_images list
+    saved_image_ids = target_user.get("saved_images", [])
+    
+    if not saved_image_ids:
+        return {"user_id": target_user.get("user_id"), "saved_images": [], "count": 0}
+    
+    # Fetch all saved images from database
+    saved_images = []
+    for img_id in saved_image_ids:
+        image = await coleccion.find_one({"image_id": img_id})
+        if image:
+            # Convert ObjectId to string
+            if "_id" in image:
+                image["_id"] = str(image["_id"])
+            # Convert liked_by to strings
+            if "liked_by" in image and image["liked_by"]:
+                image["liked_by"] = [str(uid) for uid in image["liked_by"]]
+            saved_images.append(image)
+    
+    return {
+        "user_id": user_id,
+        "saved_images": saved_images,
+        "count": len(saved_images)
+    }
