@@ -1,52 +1,71 @@
 # routers/recommendations.py
 from fastapi import APIRouter, HTTPException
-from services.recommender import VisualRecommender
 from services.graph import InteractionGraph
 from services.genetic import optimize_weights
 from database.databases import coleccion, user
 from bson import ObjectId
 from typing import Optional
 import asyncio
+import logging
 from models.Pagination import PaginationParams
 from services.evaluation import RecommenderEvaluator
 from services.recommendation_engine import RecommendationEngine
+from services.visual_search import (
+    ImageNotFoundError,
+    find_similar_images,
+)
+from vector_store import (
+    DEFAULT_MAX_GAP,
+    DEFAULT_MIN_RELATIVE,
+    DEFAULT_MIN_SCORE,
+    VectorStoreError,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recommend", tags=["Recommendations"])
-visual_recommender = VisualRecommender()
 graph_recommender = InteractionGraph()
 
 @router.get("/similar/{image_id}")
-async def get_similar_images(image_id: str, limit: int = 5):
-    """Obtiene imágenes visualmente similares - CORREGIDO para IDs numéricos"""
+async def get_similar_images(
+    image_id: int,
+    limit: int = 5,
+    min_score: float = DEFAULT_MIN_SCORE,
+    min_relative: Optional[float] = DEFAULT_MIN_RELATIVE,
+    max_gap: Optional[float] = DEFAULT_MAX_GAP
+):
+    """
+    Imágenes visualmente similares - usa el mismo motor de búsqueda que
+    /api/v1/recommendations/visual-similar (ChromaDB + filtro de relevancia),
+    con el score coseno real en cada resultado.
+    """
     try:
-        # Verificar que la imagen existe (por image_id numérico)
-        image_exists = await coleccion.find_one({"image_id": int(image_id)})
-        if not image_exists:
-            raise HTTPException(404, "Imagen no encontrada")
-        
-        similar_ids = await visual_recommender.find_similar(image_id, k=limit)
-        
-        # Obtener información completa de las imágenes similares
-        similar_images = []
-        for img_id in similar_ids:
-            image = await coleccion.find_one({"image_id": img_id})
-            if image:
-                similar_images.append({
-                    "id": image["image_id"],  # Usar image_id numérico
-                    "title": image.get("title", "Sin título"),
-                    "url": image.get("image_url", ""),
-                    "likes": image.get("interactions", {}).get("likes", 0),
-                    "views": image.get("interactions", {}).get("views", 0)
-                })
-        
+        outcome = await find_similar_images(
+            image_id=image_id,
+            limit=limit,
+            min_score=min_score,
+            min_relative=min_relative,
+            max_gap=max_gap
+        )
+
         return {
             "original_image_id": image_id,
-            "similar_images": similar_images,
-            "total_similar": len(similar_images)
+            "similar_images": outcome["results"],
+            "total_similar": len(outcome["results"]),
+            "closest_match": outcome["closest"],
+            "below_threshold": outcome["below_threshold"],
+            "thresholds": outcome["thresholds"],
+            "has_embedding": outcome["has_embedding"]
         }
-    except ValueError:
-        raise HTTPException(400, "ID de imagen debe ser numérico")
+
+    except ImageNotFoundError:
+        raise HTTPException(404, "Imagen no encontrada")
+    except VectorStoreError as e:
+        logger.error(f"❌ Servicio de vectores no disponible: {e}")
+        raise HTTPException(503, str(e))
     except Exception as e:
+        logger.error(f"❌ Error en /similar/{image_id}: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
 
 from fastapi import HTTPException, Depends, Query

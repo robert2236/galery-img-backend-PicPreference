@@ -128,16 +128,16 @@ async def lifespan(app: FastAPI):
         await visual_recommender.build_index()
         print(f"[OK] Indice visual: {len(visual_recommender.image_ids) if visual_recommender.image_ids else 0} imagenes indexadas")
         
-        # Auto-migrar embeddings a ChromaDB
-        print("[VECTOR] Inicializando ChromaDB y migrando embeddings...")
+        # Auto-migrar embeddings a ChromaDB con CLIP (512d)
+        print("[VECTOR] Inicializando ChromaDB y migrando embeddings con CLIP...")
         try:
             from vector_store import get_vector_store
             from migrate_vectors import VectorMigrator
-            migrator = VectorMigrator()
+            migrator = VectorMigrator(model_type="clip")
             migrator.run_migration(dry_run=False, incremental=True)
-            vector_store = get_vector_store()
+            vector_store = get_vector_store(feature_size=512)
             total_embeddings = vector_store.collection.count()
-            print(f"[OK] ChromaDB: {total_embeddings} embeddings disponibles")
+            print(f"[OK] ChromaDB: {total_embeddings} embeddings CLIP (512d) disponibles")
         except Exception as e:
             print(f"[WARNING] ChromaDB no disponible: {e}")
         
@@ -207,7 +207,7 @@ async def health_check():
         # Verificar conexión a la base de datos
         db_status = await coleccion.count_documents({}) >= 0
         graph_status = graph_recommender.graph.number_of_nodes() > 0 if graph_recommender.graph else False
-        visual_status = visual_recommender.tree is not None
+        visual_status = visual_recommender.ready
         
         return {
             "status": "healthy",
@@ -244,14 +244,34 @@ async def process_image(image: Image, background_tasks: BackgroundTasks):
         raise HTTPException(500, f"Error procesando imagen: {str(e)}")
 
 async def process_image_features(image_url: str, image_id: str):
-    """Tarea en segundo plano para extraer características"""
+    """Tarea en segundo plano para extraer características con CLIP"""
     try:
-        features = FeatureExtractor().extract(image_url)
+        from utils.feature_extractor import CLIPFeatureExtractor
+        extractor = CLIPFeatureExtractor()
+        features = extractor.extract(image_url)
+        
+        # Guardar features en MongoDB
         await coleccion.update_one(
             {"_id": ObjectId(image_id)},
             {"$set": {"features": features}}
         )
-        print(f"✅ Características extraídas para imagen {image_id}")
+        
+        # También agregar a ChromaDB
+        try:
+            from vector_store import get_vector_store
+            vector_store = get_vector_store(feature_size=512)
+            # Obtener image_id numérico
+            image_doc = await coleccion.find_one({"_id": ObjectId(image_id)})
+            if image_doc and features:
+                vector_store.add_embedding(
+                    image_id=image_doc.get("image_id"),
+                    vector=features,
+                    metadata={"category": image_doc.get("category", "unknown")}
+                )
+        except Exception as e:
+            print(f"⚠️ Error agregando a ChromaDB: {e}")
+        
+        print(f"✅ Características CLIP extraídas para imagen {image_id}")
         
         # Reconstruir el índice con la nueva imagen
         await visual_recommender.build_index()
@@ -288,43 +308,40 @@ async def get_recommendations(user_id: int, image_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"Error generando recomendaciones: {str(e)}")
 
 async def get_image_based_recommendations(user_id: int, image_id: str):
-    """Recomendaciones basadas en una imagen específica - CORREGIDO para IDs numéricos"""
+    """Recomendaciones basadas en una imagen específica (motor de búsqueda vectorial)"""
     try:
-        # Verificar que la imagen existe (por image_id numérico)
-        target_image = await coleccion.find_one({"image_id": int(image_id)})
-        if not target_image:
-            raise HTTPException(status_code=404, detail="Imagen no encontrada")
+        from services.visual_search import (
+            ImageNotFoundError,
+            find_similar_images,
+        )
+        from vector_store import VectorStoreError
 
-        similar_images_ids = await visual_recommender.find_similar(image_id, k=10)
-        
-        # Obtener información completa de las imágenes similares
-        similar_images = []
-        for img_id in similar_images_ids:
-            image = await coleccion.find_one({"image_id": img_id})
-            if image:
-                similar_images.append({
-                    "id": image["image_id"],  # Usar image_id numérico
-                    "title": image.get("title", "Sin título"),
-                    "image_url": image.get("image_url", ""),
-                    "category": image.get("category", ""),
-                    "interactions": image.get("interactions", {})
-                })
-        
-        # Filtrar para excluir imágenes que el usuario ya ha visto
+        outcome = await find_similar_images(image_id=int(image_id), limit=10)
+
+        # Excluir imágenes que el usuario ya interactuó
         user_viewed = await get_user_viewed_images(user_id)
-        filtered_recommendations = [
-            img for img in similar_images 
-            if img["id"] not in user_viewed
+        recommendations = [
+            img for img in outcome["results"]
+            if img["image_id"] not in user_viewed
         ]
-        
+
         return {
             "user_id": user_id,
             "based_on_image": image_id,
-            "total_recommendations": len(filtered_recommendations),
-            "recommendations": filtered_recommendations[:10]
+            "total_recommendations": len(recommendations),
+            "recommendations": recommendations[:10],
+            "closest_match": outcome["closest"],
+            "below_threshold": outcome["below_threshold"],
+            "thresholds": outcome["thresholds"]
         }
     except ValueError:
         raise HTTPException(status_code=400, detail="ID de imagen debe ser numérico")
+    except ImageNotFoundError:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    except VectorStoreError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en recomendaciones basadas en imagen: {str(e)}")
 

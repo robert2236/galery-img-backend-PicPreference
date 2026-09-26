@@ -6,11 +6,11 @@
 # ============================================================
 
 # --- Web Framework ---
-fastapi==0.103.1
-uvicorn==0.23.2
-starlette==0.27.0
-pydantic==2.3.0
-python-multipart==0.0.20
+fastapi>=0.115.0
+uvicorn>=0.30.0
+starlette>=0.38.0
+pydantic>=2.10.0
+python-multipart>=0.0.9
 
 # --- Database (MongoDB async) ---
 motor==3.3.1
@@ -33,16 +33,16 @@ transformers==4.57.3
 
 # --- ML: Classic / Utilities ---
 scikit-learn==1.7.1
-numpy==2.3.2
+numpy==2.2.6
 pillow==11.3.0
 
 # --- Graph & Evolutionary ---
-networkx==3.5
+networkx==3.4.2
 deap==1.4.3
 
 # --- HTTP / Async ---
 requests==2.31.0
-aiohttp==3.9.1
+aiohttp>=3.9.1
 
 # --- Dashboard ---
 pandas==2.3.1
@@ -53,3 +53,7 @@ fastapi-pagination==0.10.0
 
 # --- Formato legacy (bson desde pymongo) ---
 # bson incluido automaticamente con pymongo
+
+# --- Vector Store (ChromaDB) ---
+chromadb>=0.4.0
+tqdm>=4.65.0

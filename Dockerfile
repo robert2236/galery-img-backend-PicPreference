@@ -57,6 +57,7 @@ COPY --from=builder /root/.keras /app/.keras
 
 # Codigo de la aplicacion (COPY explicito: solo lo necesario)
 COPY main.py ./
+COPY vector_store.py ./
 COPY routers/ ./routers/
 COPY services/ ./services/
 COPY models/ ./models/

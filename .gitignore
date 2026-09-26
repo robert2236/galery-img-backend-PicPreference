@@ -12,6 +12,7 @@ build/
 *.egg
 *.log
 venv/
+chroma_db/
 
 
 # Archivos y carpetas generados por el sistema operativo
@@ -20,5 +21,7 @@ Thumbs.db
 
 # Dump manual de MongoDB (mongodump/mongorestore)
 backup/
+
+
 
 # Archivos y carpetas específicos de FastAPI

@@ -7,7 +7,7 @@ load_dotenv()
 
 # Obtiene la URL con fallback a localhost si no existe la variable
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "galery_dom")
+DB_NAME = os.getenv("DB_NAME", "galery")
 
 # serverSelectionTimeoutMS corto: en la nube falla rapido si MongoDB no responde
 client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
