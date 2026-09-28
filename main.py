@@ -170,7 +170,7 @@ origins = [
     "http://localhost:5173",      # Vite / React por defecto
     "http://localhost:3000",      # Next.js / Create React App
     "http://127.0.0.1:5173",
-    "https://tu-app-frontend.netlify.app", # Agrega el dominio de tu frontend si está subido
+    "https://galery-owefmep6e-robert2236s-projects.vercel.app", # Agrega el dominio de tu frontend si está subido
 ]
 
 app.add_middleware(
