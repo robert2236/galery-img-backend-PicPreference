@@ -167,10 +167,10 @@ security = HTTPBasic()
 # allow_credentials=False porque el wildcard '*' es incompatible con el envío de
 # cookies en el navegador; la autenticación de la app usa JWT Bearer (Authorization).
 origins = [
+    "https://galery-img.vercel.app",
     "http://localhost:5173",      # Vite / React por defecto
     "http://localhost:3000",      # Next.js / Create React App
-    "http://127.0.0.1:5173",
-    "https://galery-owefmep6e-robert2236s-projects.vercel.app", # Agrega el dominio de tu frontend si está subido
+    "http://127.0.0.1:5173", # Agrega el dominio de tu frontend si está subido
 ]
 
 app.add_middleware(
