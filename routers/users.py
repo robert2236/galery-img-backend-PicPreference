@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, status, APIRouter, Header,BackgroundTasks, Query, Form, UploadFile, File
-from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from database.databases import user
 from pymongo import MongoClient
@@ -8,10 +7,8 @@ from utils.auth.jwttoken import create_access_token
 from utils.auth.hashing import Hash
 from utils.services.email import send_email
 from utils.auth.token import generate_short_token, verify_short_token
-from fastapi.security import OAuth2PasswordBearer
 from fastapi_pagination import Page, add_pagination, paginate
 from models.users import User, UserUpdate,ResetPasswordRequest
-from jose import JWTError, jwt
 from fastapi.responses import FileResponse
 import os
 from dotenv import load_dotenv
@@ -43,43 +40,23 @@ class PermissionChecker:
 
 logging.basicConfig(level=logging.INFO)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 temporary_tokens = {}
 timers = {}
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7", algorithms=["HS256"])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    
-    db_user = await user.find_one({"username": username})
-    if db_user is None:
-        raise credentials_exception
-    return db_user
 
 @users.get("/api/users")
 async def read_users_me(current_user: User = Depends(get_current_user)):
 
     return {
-        "username": current_user["username"],
-        "email": current_user["email"],
-        "image": current_user["image"],
-        "user_id": current_user["user_id"],
-        "admin": current_user["admin"],
-        "name": current_user["name"],
-        "surname": current_user["surname"],
-        "info": current_user["info"],
-        "web": current_user["web"],
-        "theme": current_user["theme"]
+        "username": current_user.get("username"),
+        "email": current_user.get("email"),
+        "image": current_user.get("image"),
+        "user_id": current_user.get("user_id"),
+        "admin": current_user.get("admin", False),
+        "name": current_user.get("name"),
+        "surname": current_user.get("surname"),
+        "info": current_user.get("info"),
+        "web": current_user.get("web"),
+        "theme": current_user.get("theme", False)
     }
 
 def get_image_base64(image_path: str) -> str:

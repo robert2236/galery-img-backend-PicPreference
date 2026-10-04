@@ -16,24 +16,16 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
-def verify_token(token: str, credentials_exception):
+def verify_token(token: str, credentials_exception) -> str:
+    """Valida la firma/expiración del JWT y devuelve el username (claim 'sub')."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        user_id: int = payload.get("user_id")  # Extraer user_id del token
-        
-        if username is None or user_id is None:
+
+        if not username:
             raise credentials_exception
-        
-        # Construir el objeto User directamente desde el payload
-        user = User(
-            username=username,
-            user_id=user_id,
-            email=payload.get("email"),  # Si lo incluiste
-            admin=payload.get("admin", False)  # Si lo incluiste
-        )
-        
-        return user
+
+        return username
     except JWTError:
         raise credentials_exception
     
